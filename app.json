@@ -5,10 +5,10 @@
     "scheme": "kollabmusic",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/logo-full.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/logo-wordmark.png",
       "resizeMode": "contain",
       "backgroundColor": "#0F0F0F"
     },
@@ -19,24 +19,40 @@
       "bundleIdentifier": "com.creategood.kollabMusic",
       "supportsTablet": true,
       "buildNumber": "1",
+      "backgroundColor": "#0F0F0F",
+      "backgroundModes": [
+        "audio"
+      ],
       "infoPlist": {
         "NSMicrophoneUsageDescription": "This app needs access to the microphone to record audio.",
         "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to upload images.",
         "NSCameraUsageDescription": "This app needs access to the camera to take photos.",
-        "ITSAppUsesNonExemptEncryption": false
+        "NSBluetoothAlwaysUsageDescription": "Kollab Music uses Bluetooth to discover nearby collaborators for instant audio file sharing.",
+        "NSBluetoothPeripheralUsageDescription": "Kollab Music uses Bluetooth to share audio files with nearby musicians.",
+        "NSLocationWhenInUseUsageDescription": "Location is required for Bluetooth device discovery (iOS system requirement).",
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
       "package": "com.creategood.kollabmusic",
       "versionCode": 1,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/logo-full.png",
         "backgroundColor": "#0F0F0F"
       },
       "permissions": [
         "RECORD_AUDIO",
         "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "WRITE_EXTERNAL_STORAGE",
+        "BLUETOOTH",
+        "BLUETOOTH_ADMIN",
+        "BLUETOOTH_SCAN",
+        "BLUETOOTH_CONNECT",
+        "BLUETOOTH_ADVERTISE",
+        "ACCESS_FINE_LOCATION"
       ]
     },
     "web": {

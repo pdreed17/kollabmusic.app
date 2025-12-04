@@ -1,0 +1,124 @@
+import TrackPlayer, { 
+  Capability, 
+  State, 
+  Event,
+  Track
+} from 'react-native-track-player'
+
+class AudioPlayerService {
+  private isSetup = false
+
+  async setup() {
+    if (this.isSetup) return
+    
+    try {
+      await TrackPlayer.setupPlayer()
+      
+      await TrackPlayer.updateOptions({
+        capabilities: [
+          Capability.Play,
+          Capability.Pause,
+          Capability.Stop,
+          Capability.SeekTo,
+          Capability.Skip,
+        ],
+        compactCapabilities: [
+          Capability.Play,
+          Capability.Pause,
+        ],
+      })
+      
+      this.isSetup = true
+    } catch (error) {
+      console.error('Error setting up player:', error)
+    }
+  }
+
+  async loadTracks(audioFiles: any[]) {
+    try {
+      await this.setup()
+      await TrackPlayer.reset()
+      
+      const tracks: Track[] = audioFiles.map((file) => ({
+        id: file.id,
+        url: file.signedUrl, // Signed URL from Supabase
+        title: file.stem_name || file.file_name,
+        artist: file.users?.display_name || file.users?.username || 'Unknown',
+        artwork: undefined,
+      }))
+      
+      await TrackPlayer.add(tracks)
+    } catch (error) {
+      console.error('Error loading tracks:', error)
+    }
+  }
+
+  async play() {
+    try {
+      await TrackPlayer.play()
+    } catch (error) {
+      console.error('Error playing:', error)
+    }
+  }
+
+  async pause() {
+    try {
+      await TrackPlayer.pause()
+    } catch (error) {
+      console.error('Error pausing:', error)
+    }
+  }
+
+  async stop() {
+    try {
+      await TrackPlayer.stop()
+    } catch (error) {
+      console.error('Error stopping:', error)
+    }
+  }
+
+  async seekTo(seconds: number) {
+    try {
+      await TrackPlayer.seekTo(seconds)
+    } catch (error) {
+      console.error('Error seeking:', error)
+    }
+  }
+
+  async getState() {
+    try {
+      return await TrackPlayer.getState()
+    } catch (error) {
+      console.error('Error getting state:', error)
+      return State.None
+    }
+  }
+
+  async getPosition() {
+    try {
+      return await TrackPlayer.getPosition()
+    } catch (error) {
+      console.error('Error getting position:', error)
+      return 0
+    }
+  }
+
+  async getDuration() {
+    try {
+      return await TrackPlayer.getDuration()
+    } catch (error) {
+      console.error('Error getting duration:', error)
+      return 0
+    }
+  }
+
+  async setVolume(volume: number, trackIndex?: number) {
+    try {
+      await TrackPlayer.setVolume(volume)
+    } catch (error) {
+      console.error('Error setting volume:', error)
+    }
+  }
+}
+
+export const audioPlayer = new AudioPlayerService()

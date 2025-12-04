@@ -1,0 +1,958 @@
+import React, { useState, useEffect } from 'react'
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  ScrollView,
+  ActivityIndicator,
+  RefreshControl,
+  Image,
+} from 'react-native'
+import { Ionicons } from '@expo/vector-icons'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
+import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
+import ProjectIcon from '../components/ProjectIcon'
+import Header from '../components/Header'
+import { SkeletonList, ProjectCardSkeleton } from '../components/LoadingSkeleton'
+import { hasSkillMatch } from '../utils/skillMatching'
+import { scale } from '../utils/responsive'
+
+export default function HomeScreen({ navigation }: any) {
+  const { user, userProfile } = useAuth()
+  
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [feedFilter, setFeedFilter] = useState<'all' | 'collabs'>('all')
+  
+  // Command Center Data
+  const [recentProjects, setRecentProjects] = useState<any[]>([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [pendingInvites, setPendingInvites] = useState(0)
+  
+  // Activity Feed Data
+  const [activityFeed, setActivityFeed] = useState<any[]>([])
+  const [collabIds, setCollabIds] = useState<string[]>([])
+
+  useEffect(() => {
+    loadHomeData()
+    
+    // Set up real-time subscription for invitations count
+    const invitationsSubscription = supabase
+      .channel('home-invitations')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'collaborators',
+          filter: `user_id=eq.${user?.id}`
+        },
+        () => {
+          loadInvitationsCount()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      invitationsSubscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!loading) {
+      loadActivityFeed()
+    }
+  }, [feedFilter])
+
+  const loadInvitationsCount = async () => {
+    try {
+      if (!user?.id) return
+
+      const { count: inviteCount } = await supabase
+        .from('collaborators')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('invitation_status', 'pending')
+
+      setPendingInvites(inviteCount || 0)
+    } catch (error) {
+      console.error('Error loading invitations count:', error)
+    }
+  }
+
+  const loadHomeData = async () => {
+    try {
+      if (!user?.id) return
+
+      const { data: projects } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('creator_id', user.id)
+        .order('updated_at', { ascending: false })
+        .limit(2)
+
+      setRecentProjects(projects || [])
+
+      const { data: collaborators } = await supabase
+        .from('collaborators')
+        .select('user_id, project_id')
+        .eq('invitation_status', 'accepted')
+        .eq('user_id', user.id)
+
+      // Get unique collaborator IDs from projects where user is collaborating
+      const projectIds = collaborators?.map(c => c.project_id) || []
+      
+      if (projectIds.length > 0) {
+        const { data: projectCollaborators } = await supabase
+          .from('collaborators')
+          .select('user_id')
+          .in('project_id', projectIds)
+          .eq('invitation_status', 'accepted')
+          .neq('user_id', user.id)
+
+        const uniqueCollabIds = [...new Set(projectCollaborators?.map(c => c.user_id))] as string[]
+        setCollabIds(uniqueCollabIds)
+      }
+
+      const { count: unreadMessages } = await supabase
+        .from('comments')
+        .select('*', { count: 'exact', head: true })
+        .in('project_id', (projects || []).map(p => p.id))
+        .neq('user_id', user.id) // Exclude own comments
+        .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
+
+      setUnreadCount(unreadMessages || 0)
+
+      await loadInvitationsCount()
+      await loadActivityFeed()
+
+    } catch (error) {
+      console.error('Error loading home data:', error)
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }
+
+  const loadActivityFeed = async () => {
+    try {
+      if (!user?.id) return
+
+      let query = supabase
+        .from('comments')
+        .select(`
+          *,
+          projects(id, title, is_public, collaboration_needs),
+          users!comments_user_id_fkey(username, display_name),
+          audio_files(stem_name, file_name)
+        `)
+        .neq('user_id', user.id) // Exclude current user's own activity
+        .order('created_at', { ascending: false })
+
+      if (feedFilter === 'all') {
+        query = query.eq('projects.is_public', true)
+        query = query.limit(30)
+      } else {
+        if (collabIds.length > 0) {
+          query = query.in('user_id', collabIds)
+          query = query.limit(20)
+        } else {
+          setActivityFeed([])
+          return
+        }
+      }
+
+      const { data: activity } = await query
+
+      setActivityFeed(activity || [])
+
+    } catch (error) {
+      console.error('Error loading activity feed:', error)
+    }
+  }
+
+  const onRefresh = () => {
+    setRefreshing(true)
+    loadHomeData()
+  }
+
+  const getActivityIcon = (activity: any) => {
+    if (activity.timestamp_ms) return 'chatbox-ellipses'
+    return 'chatbubble'
+  }
+
+  const getActivityColor = (activity: any) => {
+    if (activity.timestamp_ms) return Colors.primary
+    return Colors.info
+  }
+
+  const formatTimeAgo = (date: string) => {
+    const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000)
+    
+    if (seconds < 60) return 'just now'
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
+    if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`
+    return new Date(date).toLocaleDateString()
+  }
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        {/* Custom Header with Logo */}
+        <View style={styles.customHeader}>
+          {/* Center Logo */}
+          <View style={styles.headerCenter}>
+            <Image
+              source={require('../../assets/logo-wordmark.png')}
+              style={styles.logoImage}
+              resizeMode="contain"
+            />
+            <Text style={styles.kollabText}>kollab</Text>
+          </View>
+
+          {/* Right Profile Button */}
+          <View style={styles.headerRight}>
+            <TouchableOpacity
+              style={styles.profileButton}
+              onPress={() => navigation.navigate('Profile')}
+            >
+              {userProfile?.avatar_url ? (
+                <Image
+                  source={{ uri: userProfile.avatar_url }}
+                  style={styles.profilePhoto}
+                />
+              ) : (
+                <Ionicons name="person-circle-outline" size={40} color={Colors.primary} />
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+          <View style={styles.commandZone}>
+            <View style={styles.welcomeSection}>
+              <Text style={styles.greeting}>Loading...</Text>
+            </View>
+          </View>
+          <View style={styles.feedZone}>
+            <View style={styles.feedHeader}>
+              <Text style={styles.feedTitle}>What's Happening</Text>
+            </View>
+            <SkeletonList count={4} type="project" />
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    )
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      {/* Custom Header with Logo */}
+      <View style={styles.customHeader}>
+        {/* Left Button */}
+        {pendingInvites > 0 && (
+          <View style={styles.headerLeft}>
+            <TouchableOpacity
+              style={styles.invitationsButton}
+              onPress={() => navigation.navigate('PendingInvitations')}
+            >
+              <Ionicons name="mail" size={28} color={Colors.primary} />
+              <View style={styles.invitationsBadge}>
+                <Text style={styles.invitationsBadgeText}>
+                  {pendingInvites > 9 ? '9+' : pendingInvites}
+                </Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Center Logo */}
+        <View style={styles.headerCenter}>
+          <Image
+            source={require('../../assets/logo-wordmark.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
+          <Text style={styles.kollabText}>kollab</Text>
+        </View>
+
+        {/* Right Profile Button */}
+        <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.profileButton}
+            onPress={() => navigation.navigate('Profile')}
+          >
+            {userProfile?.avatar_url ? (
+              <Image
+                source={{ uri: userProfile.avatar_url }}
+                style={styles.profilePhoto}
+              />
+            ) : (
+              <Ionicons name="person-circle-outline" size={40} color={Colors.primary} />
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <ScrollView 
+        style={styles.scrollView}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
+        }
+      >
+        {/* ZONE 1: COMMAND CENTER */}
+        <View style={styles.commandZone}>
+          {/* Alerts Banner (includes invitations + messages) */}
+          {(unreadCount > 0 || pendingInvites > 0) && (
+            <TouchableOpacity 
+              style={styles.alertsBanner}
+              onPress={() => {
+                if (pendingInvites > 0) {
+                  navigation.navigate('PendingInvitations')
+                } else {
+                  navigation.navigate('Activity')
+                }
+              }}
+            >
+              <View style={styles.alertIcon}>
+                <Ionicons name="notifications" size={20} color={Colors.text} />
+                <View style={styles.alertBadge}>
+                  <Text style={styles.alertBadgeText}>
+                    {unreadCount + pendingInvites}
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.alertContent}>
+                <Text style={styles.alertText}>
+                  {pendingInvites > 0 && `${pendingInvites} pending invite${pendingInvites > 1 ? 's' : ''}`}
+                  {pendingInvites > 0 && unreadCount > 0 && ' • '}
+                  {unreadCount > 0 && `${unreadCount} new message${unreadCount > 1 ? 's' : ''}`}
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={Colors.text} />
+            </TouchableOpacity>
+          )}
+
+          {/* Welcome */}
+          <View style={styles.welcomeSection}>
+            <Text style={styles.greeting}>
+              Hey, {userProfile?.first_name || userProfile?.display_name || userProfile?.username || 'there'}!
+            </Text>
+          </View>
+
+          {/* Continue Working */}
+          {recentProjects.length > 0 && (
+            <View style={styles.continueSection}>
+              <Text style={styles.sectionTitle}>Continue Working</Text>
+              <View style={styles.continueCards}>
+                {recentProjects.map((project) => (
+                  <TouchableOpacity
+                    key={project.id}
+                    style={styles.continueCard}
+                    onPress={() => navigation.navigate('ProjectDetail', { projectId: project.id })}
+                  >
+                    <ProjectIcon size="medium" genre={project.genre} />
+                    <Text style={styles.continueCardTitle} numberOfLines={1}>
+                      {project.title}
+                    </Text>
+                    <Text style={styles.continueCardTime}>
+                      {formatTimeAgo(project.updated_at)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* Quick Actions */}
+          <View style={styles.quickActionsSection}>
+            <View style={styles.quickActions}>
+              <TouchableOpacity 
+                style={[styles.quickAction, styles.primaryAction]}
+                onPress={() => navigation.navigate('CreateProject')}
+              >
+                <Ionicons name="add-circle" size={28} color={Colors.text} />
+                <Text style={styles.quickActionText}>New Project</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.quickAction}
+                onPress={() => navigation.navigate('Projects')}
+              >
+                <Ionicons name="folder-open-outline" size={28} color={Colors.primary} />
+                <Text style={styles.quickActionText}>My Projects</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.quickAction}
+                onPress={() => navigation.navigate('Search')}
+              >
+                <Ionicons name="search-outline" size={28} color={Colors.primary} />
+                <Text style={styles.quickActionText}>Discover</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+
+        {/* ZONE 2: ACTIVITY FEED */}
+        <View style={styles.feedZone}>
+          <View style={styles.feedHeader}>
+            <Text style={styles.feedTitle}>What's Happening</Text>
+            <Text style={styles.feedSubtitle}>Latest activity from others</Text>
+            
+            <View style={styles.feedFilters}>
+              <TouchableOpacity
+                style={[
+                  styles.filterButton,
+                  feedFilter === 'all' && styles.filterButtonActive
+                ]}
+                onPress={() => setFeedFilter('all')}
+              >
+                <Ionicons 
+                  name="globe-outline" 
+                  size={16} 
+                  color={feedFilter === 'all' ? Colors.text : Colors.textSecondary} 
+                />
+                <Text
+                  style={[
+                    styles.filterButtonText,
+                    feedFilter === 'all' && styles.filterButtonTextActive
+                  ]}
+                  numberOfLines={1}
+                >
+                  All Activity
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.filterButton,
+                  feedFilter === 'collabs' && styles.filterButtonActive
+                ]}
+                onPress={() => setFeedFilter('collabs')}
+              >
+                <Ionicons
+                  name="people-outline"
+                  size={16}
+                  color={feedFilter === 'collabs' ? Colors.text : Colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.filterButtonText,
+                    feedFilter === 'collabs' && styles.filterButtonTextActive
+                  ]}
+                  numberOfLines={1}
+                >
+                  My Collabs
+                </Text>
+                {collabIds.length > 0 && (
+                  <View style={styles.filterBadge}>
+                    <Text style={styles.filterBadgeText}>{collabIds.length}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Activity Feed */}
+          {activityFeed.length === 0 ? (
+            <View style={styles.emptyFeed}>
+              <Ionicons name="chatbubbles-outline" size={48} color={Colors.textSecondary} />
+              <Text style={styles.emptyFeedTitle}>
+                {feedFilter === 'all' ? 'No Activity Yet' : 'No Collaborator Activity'}
+              </Text>
+              <Text style={styles.emptyFeedText}>
+                {feedFilter === 'all' 
+                  ? 'Start collaborating to see updates here'
+                  : 'Activity from your collaborators will appear here'
+                }
+              </Text>
+              <TouchableOpacity 
+                style={styles.emptyFeedButton}
+                onPress={() => navigation.navigate('Search')}
+              >
+                <Text style={styles.emptyFeedButtonText}>Find Collaborators</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            activityFeed.map((activity) => {
+              // Check if this project's collaboration needs match user's skills
+              const matchesSkills = hasSkillMatch(
+                userProfile?.specialties,
+                activity.projects?.collaboration_needs
+              )
+
+              return (
+                <TouchableOpacity
+                  key={activity.id}
+                  style={[
+                    styles.activityCard,
+                    matchesSkills && styles.activityCardMatched
+                  ]}
+                  onPress={() => navigation.navigate('ProjectStudio', {
+                    projectId: activity.project_id
+                  })}
+                >
+                  <View style={[
+                    styles.activityIcon,
+                    { backgroundColor: `${getActivityColor(activity)}20` }
+                  ]}>
+                    <Ionicons
+                      name={getActivityIcon(activity)}
+                      size={20}
+                      color={getActivityColor(activity)}
+                    />
+                  </View>
+
+                  <View style={styles.activityContent}>
+                    <View style={styles.activityHeader}>
+                      <Text style={styles.activityText}>
+                        <Text style={styles.activityUser}>
+                          {activity.users?.display_name || activity.users?.username}
+                        </Text>
+                        {' commented on '}
+                        <Text style={styles.activityProject}>
+                          {activity.projects?.title}
+                        </Text>
+                      </Text>
+                      {matchesSkills && (
+                        <View style={styles.skillsMatchBadgeSmall}>
+                          <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
+                          <Text style={styles.skillsMatchTextSmall}>Match</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    <Text style={styles.activityComment} numberOfLines={2}>
+                      "{activity.content}"
+                    </Text>
+
+                    <View style={styles.activityMeta}>
+                      <Ionicons name="time-outline" size={12} color={Colors.textTertiary} />
+                      <Text style={styles.activityTime}>
+                        {formatTimeAgo(activity.created_at)}
+                      </Text>
+                      {activity.timestamp_ms && (
+                        <>
+                          <Text style={styles.activityDot}>•</Text>
+                          <Ionicons name="musical-note" size={12} color={Colors.textTertiary} />
+                          <Text style={styles.activityTimestamp}>
+                            {Math.floor(activity.timestamp_ms / 1000 / 60)}:
+                            {String(Math.floor((activity.timestamp_ms / 1000) % 60)).padStart(2, '0')}
+                          </Text>
+                        </>
+                      )}
+                    </View>
+                  </View>
+
+                  <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              )
+            })
+          )}
+
+          <View style={styles.feedBottomSpacer} />
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  )
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.backgroundDark,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  customHeader: {
+    position: 'relative',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: Spacing.xl,
+    paddingTop: Spacing.xl,
+    paddingBottom: Spacing.lg,
+    backgroundColor: '#000000',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
+    minHeight: scale(88),
+  },
+  headerLeft: {
+    position: 'absolute',
+    left: Spacing.xl,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+  },
+  headerCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerRight: {
+    position: 'absolute',
+    right: Spacing.xl,
+    top: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    width: scale(56),
+    alignItems: 'flex-end',
+  },
+  logoImage: {
+    width: scale(180),
+    height: scale(48),
+    marginBottom: 2,
+  },
+  kollabText: {
+    fontSize: scale(13),
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 1.2,
+  },
+  profileButton: {
+    padding: Spacing.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  profilePhoto: {
+    width: scale(40),
+    height: scale(40),
+    borderRadius: scale(20),
+    borderWidth: 2,
+    borderColor: Colors.primary,
+  },
+  invitationsButton: {
+    position: 'relative',
+    padding: Spacing.xs,
+  },
+  invitationsBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    backgroundColor: Colors.error,
+    borderRadius: scale(10),
+    minWidth: scale(20),
+    height: scale(20),
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.surface,
+  },
+  invitationsBadgeText: {
+    ...Typography.tiny,
+    color: Colors.text,
+    fontWeight: '700',
+  },
+  commandZone: {
+    backgroundColor: Colors.surface,
+    paddingBottom: Spacing.lg,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.border,
+  },
+  alertsBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.primary,
+    marginHorizontal: Spacing.lg,
+    marginTop: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+  },
+  alertIcon: {
+    width: scale(36),
+    height: scale(36),
+    borderRadius: scale(18),
+    backgroundColor: `${Colors.text}20`,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  alertBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    backgroundColor: Colors.error,
+    borderRadius: scale(10),
+    minWidth: scale(20),
+    height: scale(20),
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  alertBadgeText: {
+    ...Typography.tiny,
+    color: Colors.text,
+    fontWeight: '700',
+  },
+  alertContent: {
+    flex: 1,
+  },
+  alertText: {
+    ...Typography.body,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  welcomeSection: {
+    padding: Spacing.lg,
+    paddingBottom: Spacing.md,
+  },
+  greeting: {
+    ...Typography.hero,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  continueSection: {
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  sectionTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.md,
+  },
+  continueCards: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  continueCard: {
+    flex: 1,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  continueCardTitle: {
+    ...Typography.bodyLarge,
+    fontWeight: '600',
+    color: Colors.text,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xxs,
+  },
+  continueCardTime: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+  },
+  quickActionsSection: {
+    paddingHorizontal: Spacing.lg,
+  },
+  quickActions: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  quickAction: {
+    flex: 1,
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  primaryAction: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  quickActionText: {
+    ...Typography.caption,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  feedZone: {
+    backgroundColor: Colors.backgroundDark,
+    paddingTop: Spacing.lg,
+  },
+  feedHeader: {
+    paddingHorizontal: Spacing.lg,
+    marginBottom: Spacing.lg,
+  },
+  feedTitle: {
+    ...Typography.h2,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  feedSubtitle: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    marginBottom: Spacing.md,
+  },
+  feedFilters: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  filterButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: Spacing.xs,
+  },
+  filterButtonActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  filterButtonText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+    fontSize: scale(13),
+    flexShrink: 1,
+  },
+  filterButtonTextActive: {
+    color: Colors.text,
+  },
+  filterBadge: {
+    backgroundColor: `${Colors.text}30`,
+    borderRadius: scale(10),
+    minWidth: scale(20),
+    height: scale(20),
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    marginLeft: 2,
+  },
+  filterBadgeText: {
+    ...Typography.tiny,
+    color: Colors.text,
+    fontWeight: '700',
+  },
+  emptyFeed: {
+    alignItems: 'center',
+    paddingVertical: Spacing.xxxl,
+    paddingHorizontal: Spacing.lg,
+  },
+  emptyFeedTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.xs,
+  },
+  emptyFeedText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: Spacing.lg,
+  },
+  emptyFeedButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+  },
+  emptyFeedButtonText: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  activityCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: Colors.surface,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  activityCardMatched: {
+    borderWidth: 2,
+    borderColor: Colors.success,
+    backgroundColor: `${Colors.success}08`,
+    shadowColor: Colors.success,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  activityIcon: {
+    width: scale(40),
+    height: scale(40),
+    borderRadius: scale(20),
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  activityContent: {
+    flex: 1,
+  },
+  activityHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xs,
+    gap: Spacing.xs,
+  },
+  activityText: {
+    ...Typography.body,
+    color: Colors.text,
+    flex: 1,
+  },
+  activityUser: {
+    fontWeight: '600',
+    color: Colors.text,
+  },
+  activityProject: {
+    fontWeight: '600',
+    color: Colors.primary,
+  },
+  activityComment: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontStyle: 'italic',
+    marginBottom: Spacing.sm,
+  },
+  activityMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  activityTime: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+  },
+  activityDot: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+  },
+  activityTimestamp: {
+    ...Typography.caption,
+    color: Colors.textTertiary,
+  },
+  feedBottomSpacer: {
+    height: Spacing.xxxl,
+  },
+  skillsMatchBadgeSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: `${Colors.success}20`,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.success,
+  },
+  skillsMatchTextSmall: {
+    ...Typography.caption,
+    color: Colors.success,
+    fontWeight: '700',
+    fontSize: scale(10),
+  },
+})

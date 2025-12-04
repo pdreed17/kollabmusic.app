@@ -1,0 +1,151 @@
+.auth-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #0F0F0F 0%, #1A1A1A 100%);
+  padding: 20px;
+}
+
+.auth-card {
+  background: #1E1E1E;
+  border-radius: 16px;
+  padding: 40px;
+  width: 100%;
+  max-width: 440px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  border: 1px solid #2A2A2A;
+}
+
+.auth-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.auth-header h1 {
+  font-size: 32px;
+  font-weight: 700;
+  color: #FFFFFF;
+  margin: 0 0 8px 0;
+}
+
+.auth-header p {
+  font-size: 16px;
+  color: #888888;
+  margin: 0;
+}
+
+.auth-toggle {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+  background: #0F0F0F;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.auth-toggle button {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  background: transparent;
+  color: #888888;
+  font-size: 15px;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.auth-toggle button.active {
+  background: #6366F1;
+  color: #FFFFFF;
+}
+
+.auth-toggle button:hover:not(.active) {
+  color: #FFFFFF;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-group label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #CCCCCC;
+}
+
+.form-group input {
+  padding: 14px 16px;
+  background: #0F0F0F;
+  border: 1px solid #2A2A2A;
+  border-radius: 8px;
+  color: #FFFFFF;
+  font-size: 15px;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: #6366F1;
+}
+
+.form-group input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.form-group input::placeholder {
+  color: #555555;
+}
+
+.error-message {
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  color: #EF4444;
+  font-size: 14px;
+}
+
+.submit-btn {
+  padding: 14px 24px;
+  background: #6366F1;
+  border: none;
+  border-radius: 8px;
+  color: #FFFFFF;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-top: 8px;
+}
+
+.submit-btn:hover:not(:disabled) {
+  background: #5558E3;
+}
+
+.submit-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-footer {
+  margin-top: 24px;
+  text-align: center;
+}
+
+.auth-footer p {
+  font-size: 14px;
+  color: #666666;
+  margin: 0;
+}

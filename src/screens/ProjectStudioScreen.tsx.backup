@@ -1,0 +1,2117 @@
+import React, { useState, useEffect, useRef } from 'react'
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  SafeAreaView,
+  ScrollView,
+  ActivityIndicator,
+  Alert,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native'
+import Slider from '@react-native-community/slider'
+import { Ionicons } from '@expo/vector-icons'
+import { Audio } from 'expo-av'
+import { useAuth } from '../contexts/AuthContext'
+import { supabase } from '../lib/supabase'
+import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
+import Header from '../components/Header'
+import TimelineView from '../components/TimelineView'
+
+type StemType = 'vocals' | 'drums' | 'bass' | 'guitar' | 'keys' | 'synth' | 'fx' | 'multiple' | 'other'
+
+const STEM_TYPES: { value: StemType; label: string }[] = [
+  { value: 'vocals', label: 'Vocals' },
+  { value: 'drums', label: 'Drums' },
+  { value: 'bass', label: 'Bass' },
+  { value: 'guitar', label: 'Guitar' },
+  { value: 'keys', label: 'Keys/Piano' },
+  { value: 'synth', label: 'Synth' },
+  { value: 'multiple', label: 'Multiple' },
+  { value: 'fx', label: 'FX' },
+  { value: 'other', label: 'Other' },
+]
+
+type AudioFile = {
+  id: string
+  file_name: string
+  file_path: string
+  stem_type: string
+  stem_name: string
+  duration_ms: number
+  start_time_ms: number // Position on timeline where track starts
+  color: string
+  volume: number
+  pan: number
+  is_muted: boolean
+  is_soloed: boolean
+  user_id: string
+}
+
+type Comment = {
+  id: string
+  content: string
+  timestamp_ms: number
+  created_at: string
+  audio_file_id: string | null
+  users: {
+    username: string
+    display_name: string
+  }
+}
+
+export default function ProjectStudioScreen({ route, navigation }: any) {
+  const { projectId } = route.params
+  const { user } = useAuth()
+
+  // Project & Audio State
+  const [loading, setLoading] = useState(true)
+  const [project, setProject] = useState<any>(null)
+  const [audioFiles, setAudioFiles] = useState<AudioFile[]>([])
+  const [comments, setComments] = useState<Comment[]>([])
+
+  // Playback State
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentPosition, setCurrentPosition] = useState(0) // milliseconds - master position
+  const [duration, setDuration] = useState(0) // milliseconds
+  const soundObjects = useRef<{ [key: string]: Audio.Sound }>({})
+  const [trackPositions, setTrackPositions] = useState<{ [key: string]: number }>({}) // Individual track positions
+
+  // UI State
+  const [showComments, setShowComments] = useState(true)
+  const [selectedTrack, setSelectedTrack] = useState<string | null>(null)
+  const [focusedTrack, setFocusedTrack] = useState<string | null>(null) // Track shown at top
+  const [selectedTrackInTimeline, setSelectedTrackInTimeline] = useState<string | null>(null) // Track expanded in timeline
+  const [playingTracks, setPlayingTracks] = useState<Set<string>>(new Set()) // Tracks currently playing
+  const [editingTrackId, setEditingTrackId] = useState<string | null>(null)
+  const [editingTrackName, setEditingTrackName] = useState('')
+  const [editingTrackType, setEditingTrackType] = useState<StemType>('vocals')
+  const [playbackExpanded, setPlaybackExpanded] = useState(false)
+
+  // Comment Creation State
+  const [isAddingComment, setIsAddingComment] = useState(false)
+  const [commentText, setCommentText] = useState('')
+  const [commentTimestamp, setCommentTimestamp] = useState(0)
+
+  useEffect(() => {
+    loadProjectData()
+    setupAudio()
+
+    return () => {
+      // Cleanup audio on unmount
+      Object.values(soundObjects.current).forEach(sound => {
+        sound.unloadAsync()
+      })
+    }
+  }, [])
+
+  // Update position during master playback and trigger tracks
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null
+
+    if (isPlaying) {
+      interval = setInterval(async () => {
+        setCurrentPosition(prev => {
+          const newPosition = prev + 100 // Update every 100ms
+          const projectDuration = calculateProjectDuration()
+
+          // Stop if we've reached the end
+          if (newPosition >= projectDuration) {
+            handleMasterStop()
+            return projectDuration
+          }
+
+          return newPosition
+        })
+      }, 100)
+    }
+
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isPlaying])
+
+  // Check and trigger tracks when playhead reaches them
+  useEffect(() => {
+    if (!isPlaying) return
+
+    audioFiles.forEach(async (track) => {
+      const trackEndTime = track.start_time_ms + track.duration_ms
+      const isInTrackRange = currentPosition >= track.start_time_ms && currentPosition < trackEndTime
+      const isTrackPlaying = playingTracks.has(track.id)
+
+      // Start track if playhead just entered its range
+      if (isInTrackRange && !isTrackPlaying) {
+        const anySoloed = audioFiles.some(f => f.is_soloed)
+        const shouldPlay = anySoloed ? track.is_soloed : !track.is_muted
+
+        if (shouldPlay) {
+          const sound = soundObjects.current[track.id]
+          if (sound) {
+            try {
+              // Calculate position within the track
+              const positionInTrack = currentPosition - track.start_time_ms
+              await sound.setPositionAsync(positionInTrack)
+              await sound.playAsync()
+              setPlayingTracks(prev => new Set(prev).add(track.id))
+            } catch (error) {
+              console.error('Error starting track:', error)
+            }
+          }
+        }
+      }
+
+      // Stop track if playhead exited its range
+      if (!isInTrackRange && isTrackPlaying) {
+        const sound = soundObjects.current[track.id]
+        if (sound) {
+          try {
+            await sound.pauseAsync()
+            setPlayingTracks(prev => {
+              const newSet = new Set(prev)
+              newSet.delete(track.id)
+              return newSet
+            })
+          } catch (error) {
+            console.error('Error stopping track:', error)
+          }
+        }
+      }
+    })
+  }, [currentPosition, isPlaying, audioFiles])
+
+  const setupAudio = async () => {
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      })
+    } catch (error) {
+      console.error('Error setting up audio:', error)
+    }
+  }
+
+  const loadProjectData = async () => {
+    try {
+      // Load project details
+      const { data: projectData, error: projectError } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('id', projectId)
+        .single()
+
+      if (projectError) throw projectError
+      setProject(projectData)
+
+      // Load audio files
+      const { data: audioData, error: audioError } = await supabase
+        .from('audio_files')
+        .select('*')
+        .eq('project_id', projectId)
+        .order('created_at', { ascending: true })
+
+      if (audioError) throw audioError
+
+      const formattedAudio: AudioFile[] = audioData.map(file => ({
+        id: file.id,
+        file_name: file.file_name ?? '',
+        file_path: file.file_path ?? '',
+        stem_type: file.stem_type ?? 'unknown',
+        stem_name: file.stem_name ?? file.file_name ?? '',
+        duration_ms: file.duration_ms ?? 0,
+        start_time_ms: file.start_time_ms ?? 0, // Position on timeline
+        color: file.color ?? Colors.primary,
+        volume: file.volume ?? 1.0,
+        pan: file.pan ?? 0.0,
+        is_muted: file.is_muted ?? false,
+        is_soloed: file.is_soloed ?? false,
+        user_id: file.user_id ?? '',
+      }))
+
+      setAudioFiles(formattedAudio)
+
+      // Set first track as focused by default and use its duration
+      if (formattedAudio.length > 0 && !focusedTrack) {
+        setFocusedTrack(formattedAudio[0].id)
+        setDuration(formattedAudio[0].duration_ms)
+      } else if (formattedAudio.length === 0) {
+        setDuration(0)
+      }
+
+      // Load ALL comments for the project (we'll filter by audio file in the UI)
+      const { data: commentsData, error: commentsError } = await supabase
+        .from('comments')
+        .select(`
+          *,
+          users!comments_user_id_fkey(username, display_name)
+        `)
+        .eq('project_id', projectId)
+        .not('timestamp_ms', 'is', null)
+        .order('timestamp_ms', { ascending: true })
+
+      if (commentsError) {
+        console.error('Comments error:', commentsError)
+        setComments([])
+      } else {
+        const formattedComments: Comment[] = (commentsData || []).map((c: any) => ({
+          id: c.id,
+          content: c.content ?? '',
+          timestamp_ms: c.timestamp_ms ?? 0,
+          created_at: c.created_at ?? '',
+          audio_file_id: c.audio_file_id ?? null,
+          users: {
+            username: c.users?.username ?? c.username ?? 'unknown',
+            display_name: c.users?.display_name ?? c.display_name ?? '',
+          },
+        }))
+        setComments(formattedComments)
+      }
+
+    } catch (error) {
+      console.error('Error loading project:', error)
+      Alert.alert('Error', 'Failed to load project')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const loadAudioFile = async (audioFile: AudioFile) => {
+    try {
+      const { data } = await supabase.storage
+        .from('audio-files')
+        .createSignedUrl(audioFile.file_path, 3600)
+
+      if (!data?.signedUrl) throw new Error('Failed to get audio URL')
+
+      const { sound } = await Audio.Sound.createAsync(
+        { uri: data.signedUrl },
+        { shouldPlay: false, volume: audioFile.volume }
+      )
+
+      soundObjects.current[audioFile.id] = sound
+
+      // Update position callback
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (status.isLoaded && status.positionMillis) {
+          setCurrentPosition(status.positionMillis)
+        }
+      })
+
+    } catch (error) {
+      console.error('Error loading audio file:', error)
+    }
+  }
+
+  // Play or pause the focused track (main play button)
+  const handlePlayPause = async () => {
+    try {
+      if (!focusedTrack) {
+        Alert.alert('No Track Selected', 'Please select a track to play')
+        return
+      }
+
+      const isCurrentlyPlaying = playingTracks.has(focusedTrack)
+
+      if (isCurrentlyPlaying) {
+        await pauseTrack(focusedTrack)
+      } else {
+        await playTrack(focusedTrack)
+      }
+    } catch (error) {
+      console.error('Error playing audio:', error)
+      Alert.alert('Error', 'Failed to play audio')
+    }
+  }
+
+  // Play an individual track
+  const playTrack = async (trackId: string) => {
+    try {
+      const audioFile = audioFiles.find(f => f.id === trackId)
+      if (!audioFile) return
+
+      // Load if not loaded
+      if (!soundObjects.current[trackId]) {
+        await loadAudioFile(audioFile)
+      }
+
+      const sound = soundObjects.current[trackId]
+      if (!sound) return
+
+      const status = await sound.getStatusAsync()
+
+      // Stop and reset if already playing
+      if (status.isLoaded && status.isPlaying) {
+        await sound.stopAsync()
+      }
+
+      // Set position and play
+      if (status.isLoaded) {
+        await sound.setPositionAsync(currentPosition)
+
+        // Respect mute/solo state when starting playback
+        const hasSolo = audioFiles.some(f => f.is_soloed)
+        const shouldPlay = hasSolo ? audioFile.is_soloed : !audioFile.is_muted
+        const volume = shouldPlay ? audioFile.volume : 0
+
+        await sound.setVolumeAsync(volume)
+        await sound.playAsync()
+
+        setPlayingTracks(prev => new Set([...prev, trackId]))
+      }
+    } catch (error) {
+      console.error('Error playing track:', error)
+    }
+  }
+
+  // Pause an individual track
+  const pauseTrack = async (trackId: string) => {
+    try {
+      const sound = soundObjects.current[trackId]
+      if (!sound) return
+
+      const status = await sound.getStatusAsync()
+      if (status.isLoaded && status.isPlaying) {
+        await sound.pauseAsync()
+        setPlayingTracks(prev => {
+          const updated = new Set(prev)
+          updated.delete(trackId)
+          return updated
+        })
+      }
+    } catch (error) {
+      console.error('Error pausing track:', error)
+    }
+  }
+
+  // Stop an individual track
+  const stopTrack = async (trackId: string) => {
+    try {
+      const sound = soundObjects.current[trackId]
+      if (!sound) return
+
+      const status = await sound.getStatusAsync()
+      if (status.isLoaded) {
+        await sound.stopAsync()
+        await sound.setPositionAsync(0)
+        setPlayingTracks(prev => {
+          const updated = new Set(prev)
+          updated.delete(trackId)
+          return updated
+        })
+      }
+    } catch (error) {
+      console.error('Error stopping track:', error)
+    }
+  }
+
+  // Toggle play/pause for an individual track
+  const toggleTrackPlayback = async (trackId: string) => {
+    const isPlaying = playingTracks.has(trackId)
+    if (isPlaying) {
+      await pauseTrack(trackId)
+    } else {
+      await playTrack(trackId)
+    }
+  }
+
+  const handleStop = async () => {
+    try {
+      // Stop all playing tracks
+      for (const sound of Object.values(soundObjects.current)) {
+        const status = await sound.getStatusAsync()
+        if (status.isLoaded) {
+          await sound.stopAsync()
+          await sound.setPositionAsync(0)
+        }
+      }
+      setPlayingTracks(new Set())
+      setCurrentPosition(0)
+    } catch (error) {
+      console.error('Error stopping audio:', error)
+    }
+  }
+
+  // Handle clicking a track to focus it
+  const handleTrackFocus = (trackId: string) => {
+    // If clicking the already focused track in timeline, toggle timeline expansion
+    if (focusedTrack === trackId) {
+      setSelectedTrackInTimeline(selectedTrackInTimeline === trackId ? null : trackId)
+      return
+    }
+
+    // First click: focus the track in top section (minimized) and close timeline expansions
+    setFocusedTrack(trackId)
+    setSelectedTrack(null) // Close any expanded volume/pan controls in top section
+    setSelectedTrackInTimeline(null) // Close any expanded track bars in timeline
+
+    // Start with collapsed playback section
+    setPlaybackExpanded(false)
+
+    // Update duration to the focused track's duration
+    const focusedAudio = audioFiles.find(f => f.id === trackId)
+    if (focusedAudio) {
+      setDuration(focusedAudio.duration_ms)
+    }
+  }
+
+  const handleSeek = async (position: number) => {
+    try {
+      setCurrentPosition(position)
+
+      // Only seek the focused track, not all playing tracks
+      if (focusedTrack) {
+        const sound = soundObjects.current[focusedTrack]
+        if (sound) {
+          await sound.setPositionAsync(position)
+        }
+      }
+    } catch (error) {
+      console.error('Error seeking:', error)
+    }
+  }
+
+  // Skip forward 10 seconds
+  const handleSkipForward = async () => {
+    const newPosition = Math.min(currentPosition + 10000, duration)
+    await handleSeek(newPosition)
+  }
+
+  // Skip backward 10 seconds
+  const handleSkipBackward = async () => {
+    const newPosition = Math.max(currentPosition - 10000, 0)
+    await handleSeek(newPosition)
+  }
+
+  const toggleMute = async (audioFile: AudioFile) => {
+    const updated = audioFiles.map(f =>
+      f.id === audioFile.id ? { ...f, is_muted: !f.is_muted } : f
+    )
+    setAudioFiles(updated)
+
+    // Update sound if this track is playing
+    const sound = soundObjects.current[audioFile.id]
+    const isTrackPlaying = playingTracks.has(audioFile.id)
+    if (sound && isTrackPlaying) {
+      if (!audioFile.is_muted) {
+        // Muting the track
+        await sound.setVolumeAsync(0)
+      } else {
+        // Unmuting the track
+        await sound.setVolumeAsync(audioFile.volume)
+      }
+    }
+
+    // Update database
+    await supabase
+      .from('audio_files')
+      .update({ is_muted: !audioFile.is_muted })
+      .eq('id', audioFile.id)
+  }
+
+  const toggleSolo = async (audioFile: AudioFile) => {
+    const updated = audioFiles.map(f =>
+      f.id === audioFile.id ? { ...f, is_soloed: !f.is_soloed } : f
+    )
+    setAudioFiles(updated)
+
+    // Update database
+    await supabase
+      .from('audio_files')
+      .update({ is_soloed: !audioFile.is_soloed })
+      .eq('id', audioFile.id)
+
+    // If any tracks are playing, update all playing track volumes
+    if (playingTracks.size > 0) {
+      const hasSolo = updated.some(f => f.is_soloed)
+      for (const file of updated) {
+        const sound = soundObjects.current[file.id]
+        const isTrackPlaying = playingTracks.has(file.id)
+
+        // Only update volume if this track is currently playing
+        if (sound && isTrackPlaying) {
+          const shouldPlay = hasSolo ? file.is_soloed : !file.is_muted
+          await sound.setVolumeAsync(shouldPlay ? file.volume : 0)
+        }
+      }
+    }
+  }
+
+  const updateVolume = async (audioFile: AudioFile, volume: number) => {
+    const updated = audioFiles.map(f => 
+      f.id === audioFile.id ? { ...f, volume } : f
+    )
+    setAudioFiles(updated)
+
+    // Update sound if loaded
+    const sound = soundObjects.current[audioFile.id]
+    if (sound) {
+      await sound.setVolumeAsync(volume)
+    }
+
+    // Update database
+    await supabase
+      .from('audio_files')
+      .update({ volume })
+      .eq('id', audioFile.id)
+  }
+
+  const updatePan = async (audioFile: AudioFile, pan: number) => {
+    const updated = audioFiles.map(f =>
+      f.id === audioFile.id ? { ...f, pan } : f
+    )
+    setAudioFiles(updated)
+
+    // Update database
+    await supabase
+      .from('audio_files')
+      .update({ pan })
+      .eq('id', audioFile.id)
+  }
+
+  const togglePlaybackSection = () => {
+    setPlaybackExpanded(!playbackExpanded)
+  }
+
+  const startEditingTrack = (audioFile: AudioFile) => {
+    setEditingTrackId(audioFile.id)
+    setEditingTrackName(audioFile.stem_name || audioFile.file_name)
+    setEditingTrackType(audioFile.stem_type as StemType)
+    // Ensure expanded when editing
+    setPlaybackExpanded(true)
+  }
+
+  const cancelEditingTrack = () => {
+    setEditingTrackId(null)
+    setEditingTrackName('')
+    setEditingTrackType('vocals')
+  }
+
+  const saveTrackInfo = async (audioFile: AudioFile) => {
+    if (!editingTrackName.trim()) {
+      Alert.alert('Error', 'Track name cannot be empty')
+      return
+    }
+
+    try {
+      const updated = audioFiles.map(f =>
+        f.id === audioFile.id
+          ? { ...f, stem_name: editingTrackName.trim(), stem_type: editingTrackType }
+          : f
+      )
+      setAudioFiles(updated)
+
+      // Update database
+      await supabase
+        .from('audio_files')
+        .update({
+          stem_name: editingTrackName.trim(),
+          stem_type: editingTrackType
+        })
+        .eq('id', audioFile.id)
+
+      setEditingTrackId(null)
+      setEditingTrackName('')
+      setEditingTrackType('vocals')
+    } catch (error) {
+      console.error('Error updating track info:', error)
+      Alert.alert('Error', 'Failed to update track info')
+    }
+  }
+
+  const handleDeleteAudio = async (audioFile: AudioFile) => {
+    Alert.alert(
+      'Delete Audio',
+      `Are you sure you want to delete "${audioFile.stem_name || audioFile.file_name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Stop and unload sound if loaded
+              const sound = soundObjects.current[audioFile.id]
+              if (sound) {
+                await sound.stopAsync()
+                await sound.unloadAsync()
+                delete soundObjects.current[audioFile.id]
+              }
+
+              // Delete from storage
+              const { error: storageError } = await supabase.storage
+                .from('audio-files')
+                .remove([audioFile.file_path])
+
+              if (storageError) {
+                console.warn('Storage deletion warning:', storageError)
+              }
+
+              // Delete from database
+              const { error: dbError } = await supabase
+                .from('audio_files')
+                .delete()
+                .eq('id', audioFile.id)
+
+              if (dbError) throw dbError
+
+              // Update local state
+              setAudioFiles(audioFiles.filter(f => f.id !== audioFile.id))
+              Alert.alert('Success', 'Audio file deleted')
+            } catch (error) {
+              console.error('Error deleting audio:', error)
+              Alert.alert('Error', 'Failed to delete audio file')
+            }
+          },
+        },
+      ]
+    )
+  }
+
+  const handleDuplicateTrack = async (trackId: string) => {
+    const track = audioFiles.find(f => f.id === trackId)
+    if (!track || !user?.id) return
+
+    try {
+      // Create duplicate with a new ID and offset position
+      const duplicateName = `${track.stem_name || track.file_name} (Copy)`
+      const offsetPosition = track.start_time_ms + track.duration_ms // Place after original
+
+      const { data, error } = await supabase
+        .from('audio_files')
+        .insert({
+          project_id: projectId,
+          user_id: user.id,
+          file_name: track.file_name,
+          file_path: track.file_path, // Same storage file
+          stem_name: duplicateName,
+          stem_type: track.stem_type,
+          duration_ms: track.duration_ms,
+          start_time_ms: offsetPosition,
+          volume: track.volume,
+          pan: track.pan,
+          is_muted: track.is_muted,
+          is_soloed: false, // Don't duplicate solo state
+          color: track.color,
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      // Add to local state
+      const newTrack: AudioFile = {
+        id: data.id,
+        file_name: data.file_name,
+        file_path: data.file_path,
+        stem_name: data.stem_name,
+        stem_type: data.stem_type,
+        duration_ms: data.duration_ms,
+        start_time_ms: data.start_time_ms,
+        color: data.color,
+        volume: data.volume,
+        pan: data.pan,
+        is_muted: data.is_muted,
+        is_soloed: data.is_soloed,
+        user_id: data.user_id,
+      }
+
+      setAudioFiles([...audioFiles, newTrack])
+      Alert.alert('Success', `Duplicated "${track.stem_name || track.file_name}"`)
+    } catch (error) {
+      console.error('Error duplicating track:', error)
+      Alert.alert('Error', 'Failed to duplicate track')
+    }
+  }
+
+  const handleTrackMove = async (trackId: string, newStartTime: number) => {
+    try {
+      // Update local state
+      const updated = audioFiles.map(f =>
+        f.id === trackId ? { ...f, start_time_ms: newStartTime } : f
+      )
+      setAudioFiles(updated)
+
+      // Update database
+      await supabase
+        .from('audio_files')
+        .update({ start_time_ms: newStartTime })
+        .eq('id', trackId)
+    } catch (error) {
+      console.error('Error updating track position:', error)
+      Alert.alert('Error', 'Failed to update track position')
+    }
+  }
+
+  const handleDeleteTrack = async (trackId: string) => {
+    const track = audioFiles.find(f => f.id === trackId)
+    if (!track) return
+
+    Alert.alert(
+      'Delete Track',
+      `Are you sure you want to delete "${track.stem_name || track.file_name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Stop track if playing
+              if (playingTracks.has(trackId)) {
+                await stopTrack(trackId)
+              }
+
+              // Remove from local state
+              setAudioFiles(audioFiles.filter(f => f.id !== trackId))
+
+              // Clear focus if this was the focused track
+              if (focusedTrack === trackId) {
+                setFocusedTrack(null)
+              }
+
+              // Delete from database
+              const { error } = await supabase
+                .from('audio_files')
+                .delete()
+                .eq('id', trackId)
+
+              if (error) throw error
+
+              Alert.alert('Success', 'Track deleted')
+            } catch (error) {
+              console.error('Error deleting track:', error)
+              Alert.alert('Error', 'Failed to delete track')
+            }
+          },
+        },
+      ]
+    )
+  }
+
+  const handlePlayTrack = (trackId: string) => {
+    toggleTrackPlayback(trackId)
+  }
+
+  const handleSoloTrack = (trackId: string) => {
+    const track = audioFiles.find(f => f.id === trackId)
+    if (track) {
+      toggleSolo(track)
+    }
+  }
+
+  const handleMuteTrack = (trackId: string) => {
+    const track = audioFiles.find(f => f.id === trackId)
+    if (track) {
+      toggleMute(track)
+    }
+  }
+
+  // Master playback control - plays all tracks synchronized
+  const handleMasterPlayPause = async () => {
+    try {
+      if (isPlaying) {
+        // Pause all playing tracks
+        for (const trackId of playingTracks) {
+          await pauseTrack(trackId)
+        }
+        setIsPlaying(false)
+      } else {
+        // Play all tracks starting from their timeline positions
+        const tracksToPlay = new Set<string>()
+        const anySoloed = audioFiles.some(f => f.is_soloed)
+
+        const promises = audioFiles.map(async (audioFile) => {
+          const sound = soundObjects.current[audioFile.id]
+          if (!sound) return
+
+          // Calculate if this track should be playing at current position
+          const trackEndTime = audioFile.start_time_ms + audioFile.duration_ms
+          if (currentPosition >= audioFile.start_time_ms && currentPosition < trackEndTime) {
+            // Play from the appropriate position within the track
+            const positionInTrack = currentPosition - audioFile.start_time_ms
+            await sound.setPositionAsync(positionInTrack)
+
+            // Apply solo/mute logic
+            let shouldPlay = true
+            let volume = audioFile.volume
+
+            if (anySoloed) {
+              shouldPlay = audioFile.is_soloed
+            } else if (audioFile.is_muted) {
+              volume = 0
+            }
+
+            if (shouldPlay) {
+              await sound.setVolumeAsync(volume)
+              await sound.playAsync()
+              tracksToPlay.add(audioFile.id)
+            }
+          } else if (currentPosition < audioFile.start_time_ms) {
+            // Track hasn't started yet - set position to beginning
+            await sound.setPositionAsync(0)
+          }
+        })
+
+        await Promise.all(promises)
+        setPlayingTracks(tracksToPlay)
+        setIsPlaying(true)
+      }
+    } catch (error) {
+      console.error('Error in master playback:', error)
+    }
+  }
+
+  const handleMasterStop = async () => {
+    await handleStop()
+  }
+
+  const handleMasterSkipForward = () => {
+    const newPosition = Math.min(currentPosition + 10000, calculateProjectDuration())
+    setCurrentPosition(newPosition)
+  }
+
+  const handleMasterSkipBackward = () => {
+    const newPosition = Math.max(currentPosition - 10000, 0)
+    setCurrentPosition(newPosition)
+  }
+
+  // Track-specific handlers
+  const handleTrackSeek = (trackId: string, position: number) => {
+    setTrackPositions(prev => ({ ...prev, [trackId]: position }))
+    const sound = soundObjects.current[trackId]
+    if (sound) {
+      sound.setPositionAsync(position)
+    }
+  }
+
+  const handleTrackPlay = async (trackId: string) => {
+    await toggleTrackPlayback(trackId)
+  }
+
+  const handleAddTrackComment = async (trackId: string, text: string, timestamp: number) => {
+    if (!user?.id) return
+
+    try {
+      const { data, error } = await supabase
+        .from('comments')
+        .insert({
+          project_id: projectId,
+          audio_file_id: trackId,
+          user_id: user.id,
+          content: text,
+          timestamp_ms: timestamp,
+        })
+        .select(`
+          *,
+          users (username, display_name)
+        `)
+        .single()
+
+      if (error) throw error
+
+      const newComment: Comment = {
+        id: data.id,
+        content: data.content,
+        timestamp_ms: data.timestamp_ms,
+        created_at: data.created_at,
+        audio_file_id: data.audio_file_id,
+        users: data.users,
+      }
+
+      setComments([...comments, newComment])
+    } catch (error) {
+      console.error('Error adding comment:', error)
+      Alert.alert('Error', 'Failed to add comment')
+    }
+  }
+
+  const handleSeekToTrackComment = (trackId: string, timestamp: number) => {
+    handleTrackSeek(trackId, timestamp)
+  }
+
+  const getTrackComments = (trackId: string) => {
+    return comments.filter(c => c.audio_file_id === trackId)
+  }
+
+  const handleEditTrackName = async (trackId: string, newName: string) => {
+    try {
+      await supabase
+        .from('audio_files')
+        .update({ stem_name: newName })
+        .eq('id', trackId)
+
+      setAudioFiles(audioFiles.map(f => f.id === trackId ? { ...f, stem_name: newName } : f))
+    } catch (error) {
+      console.error('Error updating track name:', error)
+    }
+  }
+
+  const handleEditTrackType = async (trackId: string, newType: string) => {
+    try {
+      await supabase
+        .from('audio_files')
+        .update({ stem_type: newType })
+        .eq('id', trackId)
+
+      setAudioFiles(audioFiles.map(f => f.id === trackId ? { ...f, stem_type: newType } : f))
+    } catch (error) {
+      console.error('Error updating track type:', error)
+    }
+  }
+
+  const calculateProjectDuration = () => {
+    if (audioFiles.length === 0) return 0
+    // Find the track that ends furthest out
+    return Math.max(...audioFiles.map(f => f.start_time_ms + f.duration_ms))
+  }
+
+  const handleAddComment = () => {
+    setCommentTimestamp(currentPosition)
+    setIsAddingComment(true)
+  }
+
+  const handleSaveComment = async () => {
+    if (!commentText.trim()) {
+      Alert.alert('Error', 'Please enter a comment')
+      return
+    }
+
+    if (!focusedTrack) {
+      Alert.alert('Error', 'Please select an audio track first')
+      return
+    }
+
+    try {
+      if (!user?.id) {
+        Alert.alert('Error', 'You must be logged in to comment')
+        return
+      }
+
+      const payload = {
+        project_id: projectId,
+        user_id: user.id,
+        content: commentText.trim(),
+        timestamp_ms: commentTimestamp,
+        audio_file_id: focusedTrack // Link comment to focused audio file
+      } as any
+
+      const { error } = await supabase.from('comments').insert(payload)
+
+      if (error) throw error
+
+      setIsAddingComment(false)
+      setCommentText('')
+      loadProjectData()
+    } catch (error) {
+      console.error('Error saving comment:', error)
+      Alert.alert('Error', 'Failed to save comment')
+    }
+  }
+
+  // Get comments for the currently focused track
+  const getFocusedTrackComments = () => {
+    if (!focusedTrack) return []
+    return comments.filter(c => c.audio_file_id === focusedTrack)
+  }
+
+  const handleCancelComment = () => {
+    setIsAddingComment(false)
+    setCommentText('')
+  }
+
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds % 60
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+
+  const formatPan = (pan: number) => {
+    if (pan === 0) return 'C'
+    if (pan > 0) return `R${Math.round(pan * 100)}`
+    return `L${Math.round(Math.abs(pan) * 100)}`
+  }
+
+  const getStemColor = (stemType: string) => {
+    const colors: { [key: string]: string } = {
+      vocals: Colors.vocals,
+      drums: Colors.drums,
+      bass: Colors.bass,
+      guitar: Colors.guitar,
+      keys: Colors.keys,
+      synth: Colors.synth,
+    }
+    return colors[stemType] || Colors.primary
+  }
+
+  const organizeAudioFiles = () => {
+    const projectOwnerId = project?.user_id
+    const currentUserId = user?.id
+
+    // Separate by ownership
+    const ownerFiles = audioFiles.filter(f => f.user_id === projectOwnerId)
+    const collaboratorFiles = audioFiles.filter(f => f.user_id !== projectOwnerId)
+
+    // Group by stem type
+    const groupByType = (files: AudioFile[]) => {
+      const grouped: { [key: string]: AudioFile[] } = {}
+      files.forEach(file => {
+        const type = file.stem_type || 'other'
+        if (!grouped[type]) {
+          grouped[type] = []
+        }
+        grouped[type].push(file)
+      })
+      return grouped
+    }
+
+    return {
+      owner: groupByType(ownerFiles),
+      collaborators: groupByType(collaboratorFiles),
+      isCurrentUserOwner: currentUserId === projectOwnerId,
+    }
+  }
+
+  const renderTracksByOwnership = () => {
+    const organized = organizeAudioFiles()
+    const sections = []
+
+    // Owner's files
+    if (Object.keys(organized.owner).length > 0) {
+      sections.push(
+        <View key="owner-section">
+          <Text style={styles.ownershipHeader}>
+            {organized.isCurrentUserOwner ? 'Your Tracks' : "Owner's Tracks"}
+          </Text>
+          {Object.entries(organized.owner).map(([type, files]) => (
+            <View key={`owner-${type}`}>
+              <Text style={styles.typeHeader}>
+                {type.charAt(0).toUpperCase() + type.slice(1)} ({files.length})
+              </Text>
+              {files.map(audioFile => renderTrack(audioFile))}
+            </View>
+          ))}
+        </View>
+      )
+    }
+
+    // Collaborator's files
+    if (Object.keys(organized.collaborators).length > 0) {
+      sections.push(
+        <View key="collab-section">
+          <Text style={styles.ownershipHeader}>Collaborator Tracks</Text>
+          {Object.entries(organized.collaborators).map(([type, files]) => (
+            <View key={`collab-${type}`}>
+              <Text style={styles.typeHeader}>
+                {type.charAt(0).toUpperCase() + type.slice(1)} ({files.length})
+              </Text>
+              {files.map(audioFile => renderTrack(audioFile))}
+            </View>
+          ))}
+        </View>
+      )
+    }
+
+    return sections
+  }
+
+  const renderTrack = (audioFile: AudioFile) => {
+    const isTrackPlaying = playingTracks.has(audioFile.id)
+    const isFocused = focusedTrack === audioFile.id
+
+    return (
+      <View
+        key={audioFile.id}
+        style={[
+          styles.track,
+          selectedTrack === audioFile.id && styles.trackSelected,
+          isFocused && styles.trackFocused
+        ]}
+      >
+        {/* Track Header */}
+        <TouchableOpacity
+          style={styles.trackHeader}
+          onPress={() => handleTrackFocus(audioFile.id)}
+        >
+          {/* Individual Play Button */}
+          <TouchableOpacity
+            style={[styles.trackPlayButton, isTrackPlaying && styles.trackPlayButtonActive]}
+            onPress={(e) => {
+              e.stopPropagation()
+              toggleTrackPlayback(audioFile.id)
+            }}
+          >
+            <Ionicons
+              name={isTrackPlaying ? "pause" : "play"}
+              size={16}
+              color={isTrackPlaying ? Colors.text : Colors.textSecondary}
+            />
+          </TouchableOpacity>
+
+          <View style={[
+            styles.trackColor,
+            { backgroundColor: getStemColor(audioFile.stem_type) }
+          ]} />
+
+          <View style={styles.trackInfo}>
+            <Text style={styles.trackName} numberOfLines={1}>
+              {audioFile.stem_name || audioFile.file_name}
+            </Text>
+            <Text style={styles.trackType}>{audioFile.stem_type}</Text>
+          </View>
+
+          <View style={styles.trackControls}>
+            <TouchableOpacity
+              style={[
+                styles.trackButton,
+                audioFile.is_muted && styles.trackButtonActive
+              ]}
+              onPress={(e) => {
+                e.stopPropagation()
+                toggleMute(audioFile)
+              }}
+            >
+              <Ionicons
+                name={audioFile.is_muted ? "volume-mute" : "volume-medium"}
+                size={20}
+                color={audioFile.is_muted ? Colors.error : Colors.textSecondary}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.trackButton,
+                audioFile.is_soloed && styles.trackButtonActive
+              ]}
+              onPress={(e) => {
+                e.stopPropagation()
+                toggleSolo(audioFile)
+              }}
+            >
+              <Text style={[
+                styles.trackButtonText,
+                audioFile.is_soloed && styles.trackButtonTextActive
+              ]}>
+                S
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.trackButton}
+              onPress={(e) => {
+                e.stopPropagation()
+                handleDuplicateTrack(audioFile.id)
+              }}
+            >
+              <Ionicons
+                name="copy-outline"
+                size={20}
+                color={Colors.textSecondary}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.trackButton}
+              onPress={(e) => {
+                e.stopPropagation()
+                handleDeleteAudio(audioFile)
+              }}
+            >
+              <Ionicons
+                name="trash-outline"
+                size={20}
+                color={Colors.error}
+              />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+
+      {/* Volume & Pan Controls (expanded) */}
+      {selectedTrack === audioFile.id && (
+        <View style={styles.trackExpanded}>
+          {/* Volume Control */}
+          <View style={styles.volumeControl}>
+            <Ionicons name="volume-low" size={16} color={Colors.textSecondary} />
+            <Slider
+              style={styles.volumeSlider}
+              minimumValue={0}
+              maximumValue={1}
+              value={audioFile.volume}
+              onValueChange={(value: number) => updateVolume(audioFile, value)}
+              minimumTrackTintColor={getStemColor(audioFile.stem_type)}
+              maximumTrackTintColor={Colors.border}
+              thumbTintColor={getStemColor(audioFile.stem_type)}
+            />
+            <Text style={styles.volumeValue}>
+              {Math.round(audioFile.volume * 100)}%
+            </Text>
+          </View>
+
+          {/* Pan Control */}
+          <View style={styles.panControl}>
+            <Text style={styles.controlLabel}>Pan</Text>
+            <Slider
+              style={styles.panSlider}
+              minimumValue={-1}
+              maximumValue={1}
+              value={audioFile.pan}
+              onValueChange={(value: number) => updatePan(audioFile, value)}
+              minimumTrackTintColor={Colors.primary}
+              maximumTrackTintColor={Colors.primary}
+              thumbTintColor={Colors.primary}
+            />
+            <Text style={styles.panValue}>
+              {formatPan(audioFile.pan)}
+            </Text>
+          </View>
+        </View>
+      )}
+    </View>
+    )
+  }
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header
+          title="Studio"
+          variant="compact"
+          showBack={true}
+          onBack={() => navigation.goBack()}
+          showProfile={true}
+          onProfilePress={() => navigation.navigate('Profile')}
+        />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      </SafeAreaView>
+    )
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <Header
+        title={project?.title || 'Studio'}
+        variant="compact"
+        showBack={true}
+        onBack={() => navigation.goBack()}
+        showProfile={true}
+        onProfilePress={() => navigation.navigate('Profile')}
+      />
+
+      {/* Empty State - No Tracks */}
+      {audioFiles.length === 0 && (
+        <View style={styles.emptyStateCenter}>
+          <Ionicons name="musical-notes-outline" size={64} color={Colors.textSecondary} />
+          <Text style={styles.emptyStateText}>No tracks yet</Text>
+          <Text style={styles.emptyStateSubtext}>
+            Add your first track to get started
+          </Text>
+          <TouchableOpacity
+            style={styles.emptyStateButton}
+            onPress={() => navigation.navigate('AudioUpload', { projectId })}
+          >
+            <Ionicons name="add-circle" size={20} color="#FFF" />
+            <Text style={styles.emptyStateButtonText}>Add Track</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Main Content - With Tracks */}
+      {audioFiles.length > 0 && (
+        <>
+          {/* Fixed Add Track Button at Top */}
+          <View style={styles.addTrackHeader}>
+            <TouchableOpacity
+              style={styles.addTrackButton}
+              onPress={() => navigation.navigate('AudioUpload', { projectId })}
+            >
+              <Ionicons name="add-circle" size={20} color={Colors.primary} />
+              <Text style={styles.addTrackButtonText}>Add Track</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Timeline View with Positioned Tracks */}
+          <TimelineView
+            tracks={audioFiles.map((track) => ({
+              id: track.id,
+              name: track.stem_name || track.file_name,
+              stemType: track.stem_type,
+              duration: track.duration_ms,
+              startTime: track.start_time_ms,
+              position: trackPositions[track.id] || 0,
+              color: getStemColor(track.stem_type),
+              isMuted: track.is_muted,
+              isSoloed: track.is_soloed,
+              isPlaying: playingTracks.has(track.id),
+              comments: getTrackComments(track.id),
+            }))}
+            projectDuration={calculateProjectDuration()}
+            currentPosition={currentPosition}
+            isPlaying={isPlaying}
+            onTrackMove={handleTrackMove}
+            onToggleMute={handleMuteTrack}
+            onToggleSolo={handleSoloTrack}
+            onDuplicate={handleDuplicateTrack}
+            onDelete={handleDeleteTrack}
+            onPlay={handleTrackPlay}
+            onSeek={handleTrackSeek}
+            onAddComment={handleAddTrackComment}
+            onSeekToComment={handleSeekToTrackComment}
+            onEditName={handleEditTrackName}
+            onEditType={handleEditTrackType}
+          />
+
+          {/* Master Playback Controls - Fixed Bottom */}
+          <View style={styles.masterPlaybackControls}>
+            <View style={styles.masterControlsRow}>
+              {/* Skip Backward */}
+              <TouchableOpacity
+                style={styles.skipButton}
+                onPress={handleMasterSkipBackward}
+              >
+                <Ionicons name="play-back" size={20} color={Colors.text} />
+                <Text style={styles.skipText}>10</Text>
+              </TouchableOpacity>
+
+              {/* Stop */}
+              <TouchableOpacity
+                style={styles.masterSecondaryButton}
+                onPress={handleMasterStop}
+              >
+                <Ionicons name="stop" size={22} color={Colors.text} />
+              </TouchableOpacity>
+
+              {/* Play/Pause */}
+              <TouchableOpacity
+                style={styles.masterPlayButton}
+                onPress={handleMasterPlayPause}
+              >
+                <Ionicons
+                  name={isPlaying ? 'pause' : 'play'}
+                  size={28}
+                  color="#FFF"
+                />
+              </TouchableOpacity>
+
+              {/* Skip Forward */}
+              <TouchableOpacity
+                style={styles.skipButton}
+                onPress={handleMasterSkipForward}
+              >
+                <Text style={styles.skipText}>10</Text>
+                <Ionicons name="play-forward" size={20} color={Colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Time Display and Track Count */}
+            <View style={styles.masterPlaybackInfo}>
+              <Text style={styles.masterTimeDisplay}>
+                {formatTime(currentPosition)} / {formatTime(calculateProjectDuration())}
+              </Text>
+              <View style={styles.trackCountBadge}>
+                <Ionicons name="musical-notes" size={12} color={Colors.textSecondary} />
+                <Text style={styles.trackCountText}>{audioFiles.length}</Text>
+              </View>
+            </View>
+          </View>
+        </>
+      )}
+    </SafeAreaView>
+  )
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: Colors.backgroundDark,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  content: {
+    flex: 1,
+    paddingBottom: 80, // Space for fixed playback controls at bottom
+  },
+  // Playback Section Container
+  playbackSection: {
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 2,
+    borderBottomColor: Colors.border,
+  },
+  // COLLAPSED STATE STYLES
+  playbackCollapsed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    gap: Spacing.md,
+  },
+  collapsedPlayButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  collapsedTrackColor: {
+    width: 4,
+    height: 36,
+    borderRadius: 2,
+  },
+  collapsedTrackInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  collapsedTrackName: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+    flex: 1,
+    marginRight: Spacing.sm,
+  },
+  collapsedTime: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontVariant: ['tabular-nums'],
+  },
+  // EXPANDED STATE STYLES
+  collapseButtonTop: {
+    alignSelf: 'center',
+    paddingVertical: Spacing.xs,
+    paddingHorizontal: Spacing.xl,
+  },
+  timelineContainer: {
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.sm,
+    paddingBottom: Spacing.sm,
+  },
+  transportExpanded: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+  },
+  // Focused Track Section Styles
+  focusedTrackSection: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  focusedTrackDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.md,
+  },
+  focusedTrackColor: {
+    width: 6,
+    height: 48,
+    borderRadius: 3,
+  },
+  focusedTrackInfo: {
+    flex: 1,
+  },
+  focusedTrackName: {
+    ...Typography.h3,
+    color: Colors.text,
+    fontWeight: '700',
+    marginBottom: Spacing.xxs,
+  },
+  focusedTrackType: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    textTransform: 'capitalize',
+    fontWeight: '500',
+  },
+  focusedTrackEditButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  focusedTrackEditButtonText: {
+    ...Typography.bodyLarge,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  // Focused Track Edit Mode Styles
+  focusedTrackEdit: {
+    gap: Spacing.md,
+  },
+  focusedTrackEditTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    fontWeight: '700',
+    marginBottom: Spacing.xs,
+  },
+  focusedTrackNameEdit: {
+    gap: Spacing.xs,
+  },
+  focusedTrackTypeEdit: {
+    gap: Spacing.xs,
+  },
+  focusedTrackLabel: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  focusedTrackInput: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    borderRadius: BorderRadius.md,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.md,
+  },
+  focusedTypePickerScroll: {
+    marginTop: Spacing.xs,
+  },
+  focusedTypeChip: {
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 2,
+    borderColor: Colors.border,
+    marginRight: Spacing.sm,
+  },
+  focusedTypeChipActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  focusedTypeChipText: {
+    ...Typography.bodyLarge,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+  focusedTypeChipTextActive: {
+    color: Colors.text,
+  },
+  focusedTrackEditButtons: {
+    flexDirection: 'row',
+    gap: Spacing.md,
+    marginTop: Spacing.sm,
+  },
+  focusedCancelButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.md,
+    borderWidth: 2,
+    borderColor: Colors.border,
+  },
+  focusedCancelButtonText: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  focusedSaveButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.success,
+    borderRadius: BorderRadius.md,
+    borderWidth: 2,
+    borderColor: Colors.success,
+  },
+  focusedSaveButtonText: {
+    ...Typography.bodyLarge,
+    color: '#FFF',
+    fontWeight: '600',
+  },
+  timelineHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: Spacing.xs,
+  },
+  timelineTime: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontVariant: ['tabular-nums'],
+  },
+  timelineSlider: {
+    width: '100%',
+    height: 40,
+  },
+  timelineComments: {
+    height: 20,
+    position: 'relative',
+    marginTop: Spacing.xs,
+  },
+  commentMarker: {
+    position: 'absolute',
+    top: 0,
+    width: 24,
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: Colors.primary,
+  },
+  commentInputSection: {
+    backgroundColor: Colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    padding: Spacing.md,
+  },
+  commentInputHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginBottom: Spacing.sm,
+  },
+  commentInputTitle: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  commentTextInput: {
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.md,
+    padding: Spacing.md,
+    color: Colors.text,
+    ...Typography.body,
+    minHeight: 80,
+    textAlignVertical: 'top',
+    marginBottom: Spacing.md,
+  },
+  commentInputButtons: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  commentCancelButton: {
+    flex: 1,
+    backgroundColor: Colors.surfaceElevated,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  commentCancelText: {
+    ...Typography.bodyLarge,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+  commentSaveButton: {
+    flex: 1,
+    backgroundColor: Colors.primary,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    alignItems: 'center',
+  },
+  commentSaveText: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  transportSecondaryButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: Colors.surfaceElevated,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  playButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: Spacing.xs,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  skipButtonContent: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  skipLabel: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontSize: 8,
+    marginTop: -2,
+    fontWeight: '600',
+  },
+  // Add Track Button
+  addTrackContainer: {
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  addTrackButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.xs,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  addTrackButtonText: {
+    ...Typography.bodyLarge,
+    color: Colors.primary,
+    fontWeight: '600',
+  },
+  timelineWrapper: {
+    flex: 1,
+    backgroundColor: Colors.backgroundDark,
+  },
+  emptyStateCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: Spacing.xxxl * 2,
+    paddingHorizontal: Spacing.xl,
+  },
+  mixer: {
+    flex: 1,
+    backgroundColor: Colors.backgroundDark,
+  },
+  mixerTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+  },
+  ownershipHeader: {
+    ...Typography.h3,
+    color: Colors.primary,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.lg,
+    paddingBottom: Spacing.sm,
+    fontWeight: '700',
+  },
+  typeHeader: {
+    ...Typography.bodyLarge,
+    color: Colors.textSecondary,
+    paddingHorizontal: Spacing.lg,
+    paddingTop: Spacing.md,
+    paddingBottom: Spacing.xs,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    fontSize: 12,
+  },
+  track: {
+    backgroundColor: Colors.surface,
+    marginHorizontal: Spacing.lg,
+    marginBottom: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    overflow: 'hidden',
+  },
+  trackSelected: {
+    borderColor: Colors.primary,
+  },
+  trackFocused: {
+    borderColor: Colors.primary,
+    borderWidth: 2,
+    backgroundColor: Colors.surfaceElevated,
+  },
+  trackHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.md,
+  },
+  trackPlayButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.surfaceElevated,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginRight: Spacing.sm,
+  },
+  trackPlayButtonActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  trackColor: {
+    width: 4,
+    height: 40,
+    borderRadius: 2,
+    marginRight: Spacing.md,
+  },
+  trackInfo: {
+    flex: 1,
+  },
+  trackName: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  trackType: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    textTransform: 'capitalize',
+  },
+  trackControls: {
+    flexDirection: 'row',
+    gap: Spacing.xs,
+  },
+  trackButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.surfaceElevated,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  trackButtonActive: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  trackButtonText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontWeight: '700',
+  },
+  trackButtonTextActive: {
+    color: Colors.text,
+  },
+  trackExpanded: {
+    paddingHorizontal: Spacing.md,
+    paddingBottom: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+    gap: Spacing.sm,
+  },
+  volumeControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+    paddingTop: Spacing.sm,
+  },
+  volumeSlider: {
+    flex: 1,
+    height: 40,
+  },
+  volumeValue: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    width: 40,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  panControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  controlLabel: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    width: 40,
+  },
+  panSlider: {
+    flex: 1,
+    height: 40,
+  },
+  panValue: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    width: 40,
+    textAlign: 'right',
+    fontVariant: ['tabular-nums'],
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: Spacing.xxxl,
+    paddingHorizontal: Spacing.lg,
+  },
+  emptyStateText: {
+    ...Typography.h3,
+    color: Colors.textSecondary,
+    marginTop: Spacing.lg,
+    marginBottom: Spacing.lg,
+  },
+  emptyStateButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+    borderRadius: BorderRadius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  emptyStateButtonText: {
+    ...Typography.bodyLarge,
+    color: '#FFF',
+    fontWeight: '600',
+  },
+  emptyStateCenter: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.xl,
+  },
+  emptyStateSubtext: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    marginTop: Spacing.sm,
+    marginBottom: Spacing.xl,
+    textAlign: 'center',
+  },
+  // Add Track Header
+  addTrackHeader: {
+    backgroundColor: Colors.surface,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  // Tracks ScrollView
+  tracksScrollView: {
+    flex: 1,
+    backgroundColor: Colors.backgroundDark,
+  },
+  tracksScrollContent: {
+    paddingBottom: Spacing.lg,
+  },
+  // Master Playback Controls
+  masterPlaybackControls: {
+    backgroundColor: Colors.surface,
+    borderTopWidth: 2,
+    borderTopColor: Colors.border,
+    paddingHorizontal: Spacing.lg,
+    paddingVertical: Spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  masterControlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: Spacing.md,
+    marginBottom: Spacing.sm,
+  },
+  skipButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    width: 60,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  skipText: {
+    ...Typography.caption,
+    color: Colors.text,
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  masterSecondaryButton: {
+    width: 48,
+    height: 48,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surfaceElevated,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  masterPlayButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginHorizontal: Spacing.sm,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  masterPlaybackInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  masterTimeDisplay: {
+    ...Typography.body,
+    color: Colors.text,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  trackCountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    backgroundColor: Colors.surfaceElevated,
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: 4,
+    borderRadius: BorderRadius.sm,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  trackCountText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+})
