@@ -1,5 +1,19 @@
-import * as Notifications from 'expo-notifications'
 import { supabase } from '../lib/supabase'
+import { Platform } from 'react-native'
+
+// Lazy-load expo-notifications to avoid crash if native module not available
+let Notifications: typeof import('expo-notifications') | null = null
+
+async function getNotificationsModule() {
+  if (Notifications) return Notifications
+  try {
+    Notifications = await import('expo-notifications')
+    return Notifications
+  } catch (error) {
+    console.log('[Badge] expo-notifications not available - badge features disabled')
+    return null
+  }
+}
 
 /**
  * Badge Service
@@ -118,7 +132,10 @@ export async function getNotificationCounts(userId: string): Promise<Notificatio
 export async function updateBadgeCount(userId: string): Promise<number> {
   try {
     const counts = await getNotificationCounts(userId)
-    await Notifications.setBadgeCountAsync(counts.total)
+    const NotificationsModule = await getNotificationsModule()
+    if (NotificationsModule) {
+      await NotificationsModule.setBadgeCountAsync(counts.total)
+    }
 
     if (__DEV__) {
       console.log('[Badge] Updated badge count:', counts)
@@ -136,7 +153,10 @@ export async function updateBadgeCount(userId: string): Promise<number> {
  */
 export async function clearBadge(): Promise<void> {
   try {
-    await Notifications.setBadgeCountAsync(0)
+    const NotificationsModule = await getNotificationsModule()
+    if (NotificationsModule) {
+      await NotificationsModule.setBadgeCountAsync(0)
+    }
     if (__DEV__) {
       console.log('[Badge] Cleared badge')
     }
@@ -150,7 +170,11 @@ export async function clearBadge(): Promise<void> {
  */
 export async function getCurrentBadgeCount(): Promise<number> {
   try {
-    return await Notifications.getBadgeCountAsync()
+    const NotificationsModule = await getNotificationsModule()
+    if (NotificationsModule) {
+      return await NotificationsModule.getBadgeCountAsync()
+    }
+    return 0
   } catch (error) {
     console.error('[Badge] Error getting badge count:', error)
     return 0
