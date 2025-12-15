@@ -1,24 +1,11 @@
 import { supabase } from '../lib/supabase'
-import { Platform } from 'react-native'
-
-// Lazy-load expo-notifications to avoid crash if native module not available
-let Notifications: typeof import('expo-notifications') | null = null
-
-async function getNotificationsModule() {
-  if (Notifications) return Notifications
-  try {
-    Notifications = await import('expo-notifications')
-    return Notifications
-  } catch (error) {
-    console.log('[Badge] expo-notifications not available - badge features disabled')
-    return null
-  }
-}
 
 /**
  * Badge Service
  * Manages app icon badge count based on unread notifications
- * Phase 1: Updates badge when app opens (no push notifications required)
+ *
+ * NOTE: Badge functionality is disabled in development builds that don't have
+ * the expo-notifications native module. Badge will work in production builds.
  */
 
 export interface NotificationCounts {
@@ -33,7 +20,6 @@ export interface NotificationCounts {
  */
 async function getPendingInvitationsCount(userId: string): Promise<number> {
   try {
-    // Note: project_collaborators table exists but isn't in auto-generated types
     const { count, error } = await (supabase as any)
       .from('project_collaborators')
       .select('*', { count: 'exact', head: true })
@@ -57,7 +43,6 @@ async function getPendingInvitationsCount(userId: string): Promise<number> {
  */
 async function getUnreadMessagesCount(userId: string): Promise<number> {
   try {
-    // Note: user_messages table exists but isn't in auto-generated types
     const { count, error } = await (supabase as any)
       .from('user_messages')
       .select('*', { count: 'exact', head: true })
@@ -81,9 +66,6 @@ async function getUnreadMessagesCount(userId: string): Promise<number> {
  */
 async function getNewKonnectionsCount(userId: string): Promise<number> {
   try {
-    // Note: user_connections table exists but isn't in auto-generated types
-    // following_id = you (someone Konnected with you)
-    // seen = false (you haven't seen this connection yet)
     const { count, error } = await (supabase as any)
       .from('user_connections')
       .select('*', { count: 'exact', head: true })
@@ -92,9 +74,8 @@ async function getNewKonnectionsCount(userId: string): Promise<number> {
       .eq('status', 'active')
 
     if (error) {
-      // If 'seen' column doesn't exist yet, return 0 (migration not run)
       if (error.code === '42703') {
-        console.log('[Badge] seen column not found - run migration 20240116_connection_notifications.sql')
+        console.log('[Badge] seen column not found - run migration')
         return 0
       }
       console.error('[Badge] Error fetching new konnections:', error)
@@ -128,19 +109,17 @@ export async function getNotificationCounts(userId: string): Promise<Notificatio
 
 /**
  * Update the app icon badge with the current notification count
+ * NOTE: Badge updates disabled - native module not available in dev build
  */
 export async function updateBadgeCount(userId: string): Promise<number> {
   try {
     const counts = await getNotificationCounts(userId)
-    const NotificationsModule = await getNotificationsModule()
-    if (NotificationsModule) {
-      await NotificationsModule.setBadgeCountAsync(counts.total)
-    }
-
+    // Badge updates disabled - expo-notifications native module not available
+    // In production builds with native module, uncomment:
+    // await Notifications.setBadgeCountAsync(counts.total)
     if (__DEV__) {
-      console.log('[Badge] Updated badge count:', counts)
+      console.log('[Badge] Count (badge update disabled):', counts.total)
     }
-
     return counts.total
   } catch (error) {
     console.error('[Badge] Error updating badge count:', error)
@@ -150,18 +129,12 @@ export async function updateBadgeCount(userId: string): Promise<number> {
 
 /**
  * Clear the app icon badge
+ * NOTE: Badge clearing disabled - native module not available in dev build
  */
 export async function clearBadge(): Promise<void> {
-  try {
-    const NotificationsModule = await getNotificationsModule()
-    if (NotificationsModule) {
-      await NotificationsModule.setBadgeCountAsync(0)
-    }
-    if (__DEV__) {
-      console.log('[Badge] Cleared badge')
-    }
-  } catch (error) {
-    console.error('[Badge] Error clearing badge:', error)
+  // Badge updates disabled - expo-notifications native module not available
+  if (__DEV__) {
+    console.log('[Badge] Clear badge (disabled)')
   }
 }
 
@@ -169,21 +142,12 @@ export async function clearBadge(): Promise<void> {
  * Get current badge count from the system
  */
 export async function getCurrentBadgeCount(): Promise<number> {
-  try {
-    const NotificationsModule = await getNotificationsModule()
-    if (NotificationsModule) {
-      return await NotificationsModule.getBadgeCountAsync()
-    }
-    return 0
-  } catch (error) {
-    console.error('[Badge] Error getting badge count:', error)
-    return 0
-  }
+  // Badge reading disabled - expo-notifications native module not available
+  return 0
 }
 
 /**
  * Mark all Konnections as seen for a user
- * Call this when user views their connections/activity
  */
 export async function markKonnectionsAsSeen(userId: string): Promise<void> {
   try {
@@ -194,7 +158,6 @@ export async function markKonnectionsAsSeen(userId: string): Promise<void> {
       .eq('seen', false)
 
     if (error) {
-      // Ignore if column doesn't exist yet
       if (error.code !== '42703') {
         console.error('[Badge] Error marking konnections as seen:', error)
       }
