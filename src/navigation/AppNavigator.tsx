@@ -7,12 +7,11 @@ import { ActivityIndicator, View } from 'react-native'
 // Screens
 import { LoginScreen } from '../screens/auth/LoginScreen'
 import { SignupScreen } from '../screens/auth/SignUpScreen'
-import TabNavigator from './TabNavigator'
+import MainNavigator from './MainNavigator'
 import AudioUploadScreen from '../screens/AudioUploadScreen'
 import ProjectDetailScreen from '../screens/ProjectDetailScreen'
 import EditProjectScreen from '../screens/EditProjectScreen'
 import InviteCollaboratorScreen from '../screens/InviteCollaboratorScreen'
-import ProfileScreen from '../screens/ProfileScreen'
 import CreateProjectScreen from '../screens/CreateProjectScreen'
 import ProjectStudioScreen from '../screens/ProjectStudioScreen'
 import WebDAWScreen from '../screens/WebDAWScreen'
@@ -30,6 +29,7 @@ import PrivacyPolicyScreen from '../screens/PrivacyPolicyScreen'
 import TermsOfServiceScreen from '../screens/TermsOfServiceScreen'
 import SimilarTracksScreen from '../screens/SimilarTracksScreen'
 import HighlightUploadScreen from '../screens/HighlightUploadScreen'
+import UserProfileScreen from '../screens/UserProfileScreen'
 
 const Stack = createNativeStackNavigator()
 
@@ -50,9 +50,9 @@ export default function AppNavigator() {
         {user ? (
           // Authenticated screens
           <>
-            <Stack.Screen 
-              name="MainTabs" 
-              component={TabNavigator}
+            <Stack.Screen
+              name="MainTabs"
+              component={MainNavigator}
               options={{ headerShown: false }}
             />
             <Stack.Screen 
@@ -141,11 +141,6 @@ export default function AppNavigator() {
               options={{ headerShown: false }}
             />
             <Stack.Screen
-              name="Profile"
-              component={ProfileScreen}
-              options={{ headerShown: false }}
-            />
-            <Stack.Screen
               name="ProjectStudio"
               component={ProjectStudioScreen}
               options={{ headerShown: false }}
@@ -163,6 +158,11 @@ export default function AppNavigator() {
             <Stack.Screen
               name="SimilarTracks"
               component={SimilarTracksScreen}
+              options={{ headerShown: false }}
+            />
+            <Stack.Screen
+              name="UserProfile"
+              component={UserProfileScreen}
               options={{ headerShown: false }}
             />
           </>

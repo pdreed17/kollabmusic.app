@@ -45,7 +45,7 @@ class AudioServiceCompat {
         duration_ms: file.duration_ms,
       }));
     } catch (error) {
-      console.error('Error fetching audio files:', error);
+      if (__DEV__) console.error('Error fetching audio files:', error);
       throw error;
     }
   }
@@ -66,14 +66,14 @@ class AudioServiceCompat {
         .createSignedUrl(filePath, 60 * 60); // 1 hour expiry
 
       if (error) {
-        console.warn('Error creating signed URL:', error);
+        if (__DEV__) console.warn('Error creating signed URL:', error);
         // Return the original path as fallback
         return filePath;
       }
 
       return data.signedUrl;
     } catch (error) {
-      console.error('Error getting audio URL:', error);
+      if (__DEV__) console.error('Error getting audio URL:', error);
       return filePath; // Fallback to original path
     }
   }
@@ -98,9 +98,9 @@ class AudioServiceCompat {
 
       if (error) throw error;
 
-      console.log(`Updated mixer settings for ${audioFileId}:`, settings);
+      if (__DEV__) console.log(`Updated mixer settings for ${audioFileId}:`, settings);
     } catch (error) {
-      console.error('Error updating mixer settings:', error);
+      if (__DEV__) console.error('Error updating mixer settings:', error);
       throw error;
     }
   }

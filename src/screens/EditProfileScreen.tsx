@@ -5,19 +5,19 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   ActivityIndicator,
-  Image,
   Switch,
+  Image,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import * as ImagePicker from 'expo-image-picker'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 const SPECIALTIES = [
   // Instruments
@@ -55,7 +55,7 @@ const SPECIALTIES = [
 const CATEGORIES = ['Instruments', 'Production', 'Songwriting', 'Other']
 
 export default function EditProfileScreen({ navigation }: any) {
-  const { user, userProfile } = useAuth()
+  const { user, userProfile, refreshUserProfile } = useAuth()
   const [displayName, setDisplayName] = useState(userProfile?.display_name || '')
   const [bio, setBio] = useState(userProfile?.bio || '')
   const [avatarUrl, setAvatarUrl] = useState(userProfile?.avatar_url || '')
@@ -89,6 +89,22 @@ export default function EditProfileScreen({ navigation }: any) {
     try {
       setUploading(true)
 
+      // Delete old avatar from storage if it exists
+      if (avatarUrl) {
+        try {
+          // Extract file path from URL
+          // URL format: https://{project}.supabase.co/storage/v1/object/public/profile-pictures/avatars/{filename}
+          const urlParts = avatarUrl.split('/profile-pictures/')
+          if (urlParts.length === 2) {
+            const oldFilePath = urlParts[1]
+            await supabase.storage.from('profile-pictures').remove([oldFilePath])
+          }
+        } catch (deleteError) {
+          // Log but don't fail upload if delete fails
+          console.warn('Failed to delete old avatar:', deleteError)
+        }
+      }
+
       const fileExt = uri.split('.').pop() || 'jpg'
       const fileName = `${user?.id}_${Date.now()}.${fileExt}`
       const filePath = `avatars/${fileName}`
@@ -108,7 +124,18 @@ export default function EditProfileScreen({ navigation }: any) {
       if (uploadError) throw uploadError
 
       const { data } = supabase.storage.from('profile-pictures').getPublicUrl(filePath)
-      setAvatarUrl(data.publicUrl)
+      const publicUrl = data.publicUrl
+
+      // Save avatar URL to database immediately
+      const { error: updateError } = await supabase
+        .from('users')
+        .update({ avatar_url: publicUrl })
+        .eq('id', user?.id)
+
+      if (updateError) throw updateError
+
+      setAvatarUrl(publicUrl)
+      await refreshUserProfile()
       Alert.alert('Success', 'Profile picture uploaded!')
     } catch (error: any) {
       Alert.alert('Upload Failed', error.message || 'Failed to upload image')
@@ -135,7 +162,15 @@ export default function EditProfileScreen({ navigation }: any) {
     }
     setSaving(true)
     try {
-      const { error } = await supabase
+      console.log('Saving profile with data:', {
+        display_name: displayName.trim(),
+        bio: bio.trim() || null,
+        avatar_url: avatarUrl || null,
+        specialties: selectedSpecialties,
+        open_to_kollab: openToKollab,
+      })
+
+      const { data, error } = await supabase
         .from('users')
         .update({
           display_name: displayName.trim(),
@@ -145,14 +180,24 @@ export default function EditProfileScreen({ navigation }: any) {
           open_to_kollab: openToKollab,
         })
         .eq('id', userId)
-      
-      if (error) throw error
-      
+        .select()
+
+      if (error) {
+        console.error('Update error:', error)
+        throw error
+      }
+
+      console.log('Update successful, data:', data)
+      console.log('Refreshing user profile...')
+      await refreshUserProfile()
+      console.log('User profile refreshed')
+
       Alert.alert('Success', 'Profile updated!', [
         { text: 'OK', onPress: () => navigation.goBack() }
       ])
     } catch (error: any) {
-      Alert.alert('Error', 'Failed to update profile')
+      console.error('Save failed:', error)
+      Alert.alert('Error', `Failed to update profile: ${error.message || 'Unknown error'}`)
     } finally {
       setSaving(false)
     }
@@ -160,14 +205,25 @@ export default function EditProfileScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Edit Profile" variant="compact" showBack={true} onBack={() => navigation.goBack()} />
+      <CompactHeader
+        title="Edit Profile"
+        onBack={() => navigation.goBack()}
+        rightButton={{
+          icon: 'checkmark',
+          onPress: handleSave,
+        }}
+      />
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Profile Picture */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Profile Picture</Text>
           <View style={styles.avatarSection}>
             {avatarUrl ? (
-              <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+              <Image
+                source={{ uri: avatarUrl }}
+                style={styles.avatarImage}
+                resizeMode="cover"
+              />
             ) : (
               <View style={styles.avatar}>
                 <Text style={styles.avatarText}>{(displayName || 'U').charAt(0).toUpperCase()}</Text>
@@ -193,7 +249,7 @@ export default function EditProfileScreen({ navigation }: any) {
             <Text style={styles.label}>Display Name *</Text>
             <TextInput
               style={styles.input}
-              placeholder="Your Name"
+              placeholder="Your real name or stage name"
               placeholderTextColor={Colors.textSecondary}
               value={displayName}
               onChangeText={setDisplayName}
@@ -203,7 +259,7 @@ export default function EditProfileScreen({ navigation }: any) {
             <Text style={styles.label}>Bio</Text>
             <TextInput
               style={[styles.input, styles.textArea]}
-              placeholder="Tell others about yourself..."
+              placeholder="Share your musical background, influences, and what you're working on..."
               placeholderTextColor={Colors.textSecondary}
               value={bio}
               onChangeText={setBio}
@@ -219,7 +275,7 @@ export default function EditProfileScreen({ navigation }: any) {
             <View style={styles.toggleInfo}>
               <Text style={styles.toggleLabel}>Open to Kollab</Text>
               <Text style={styles.toggleDescription}>
-                Let others know you're available for collaborations
+                Let others know you're available for kollabs
               </Text>
             </View>
             <Switch

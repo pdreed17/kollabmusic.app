@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import { View, StyleSheet, Alert, ActivityIndicator, Text } from 'react-native'
 import { WebView } from 'react-native-webview'
 import { SafeAreaView } from 'react-native-safe-area-context'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 import { Colors, Typography, Spacing } from '../constants/theme'
 
 export default function WebDAWScreen() {
@@ -78,7 +78,7 @@ export default function WebDAWScreen() {
   if (isLoading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header title="Web DAW" />
+        <CompactHeader title="Web DAW" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
           <Text style={styles.loadingText}>
@@ -92,7 +92,7 @@ export default function WebDAWScreen() {
   if (!webDAWUrl) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header title="Web DAW" />
+        <CompactHeader title="Web DAW" />
         <View style={styles.errorContainer}>
           <Text style={styles.errorTitle}>Web DAW Server Not Found</Text>
           <Text style={styles.errorMessage}>
@@ -110,7 +110,7 @@ export default function WebDAWScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Web DAW" />
+      <CompactHeader title="Web DAW" />
 
       <WebView
         source={{ uri: webDAWUrl }}

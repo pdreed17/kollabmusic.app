@@ -171,10 +171,23 @@ export default function SimpleTimeline({
   }
 
   const saveEdit = () => {
-    if (editingTrack && editName.trim()) {
-      onEditTrack(editingTrack.id, editName.trim(), editStemType, editColor)
-      closeEditModal()
+    if (!editingTrack || !editName.trim()) {
+      return
     }
+
+    // Check for duplicate track names (excluding the current track)
+    const trimmedName = editName.trim()
+    const isDuplicate = tracks.some(
+      track => track.id !== editingTrack.id && track.name.toLowerCase() === trimmedName.toLowerCase()
+    )
+
+    if (isDuplicate) {
+      Alert.alert('Duplicate Name', 'A track with this name already exists. Please choose a different name.')
+      return
+    }
+
+    onEditTrack(editingTrack.id, trimmedName, editStemType, editColor)
+    closeEditModal()
   }
 
   const handleDelete = () => {

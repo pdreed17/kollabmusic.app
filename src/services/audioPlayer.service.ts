@@ -36,7 +36,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
         playThroughEarpieceAndroid: false,
       });
     } catch (error) {
-      console.error('Error initializing audio:', error);
+      if (__DEV__) console.error('Error initializing audio:', error);
     }
   }
 
@@ -47,7 +47,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
     try {
       // Check if track already loaded
       if (this.sounds.has(trackInfo.id)) {
-        console.log(`Track ${trackInfo.id} already loaded`);
+        if (__DEV__) console.log(`Track ${trackInfo.id} already loaded`);
         return;
       }
 
@@ -63,9 +63,9 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       );
 
       this.sounds.set(trackInfo.id, sound);
-      console.log(`Track ${trackInfo.id} loaded successfully`);
+      if (__DEV__) console.log(`Track ${trackInfo.id} loaded successfully`);
     } catch (error) {
-      console.error(`Error loading track ${trackInfo.id}:`, error);
+      if (__DEV__) console.error(`Error loading track ${trackInfo.id}:`, error);
       throw error;
     }
   }
@@ -76,9 +76,9 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
   async loadTracks(tracks: TrackInfo[]): Promise<void> {
     try {
       await Promise.all(tracks.map(track => this.loadTrack(track)));
-      console.log(`Loaded ${tracks.length} tracks`);
+      if (__DEV__) console.log(`Loaded ${tracks.length} tracks`);
     } catch (error) {
-      console.error('Error loading tracks:', error);
+      if (__DEV__) console.error('Error loading tracks:', error);
       throw error;
     }
   }
@@ -89,7 +89,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
   async play(): Promise<void> {
     try {
       if (this.sounds.size === 0) {
-        console.warn('No tracks loaded');
+        if (__DEV__) console.warn('No tracks loaded');
         return;
       }
 
@@ -102,7 +102,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       this.isPlaying = true;
       this.notifyListeners('play', { isPlaying: true });
     } catch (error) {
-      console.error('Error playing tracks:', error);
+      if (__DEV__) console.error('Error playing tracks:', error);
       throw error;
     }
   }
@@ -120,7 +120,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       this.isPlaying = false;
       this.notifyListeners('pause', { isPlaying: false });
     } catch (error) {
-      console.error('Error pausing tracks:', error);
+      if (__DEV__) console.error('Error pausing tracks:', error);
       throw error;
     }
   }
@@ -139,7 +139,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       this.currentPosition = 0;
       this.notifyListeners('stop', { isPlaying: false, position: 0 });
     } catch (error) {
-      console.error('Error stopping tracks:', error);
+      if (__DEV__) console.error('Error stopping tracks:', error);
       throw error;
     }
   }
@@ -157,7 +157,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       this.currentPosition = positionMillis;
       this.notifyListeners('seek', { position: positionMillis });
     } catch (error) {
-      console.error('Error seeking:', error);
+      if (__DEV__) console.error('Error seeking:', error);
       throw error;
     }
   }
@@ -169,17 +169,17 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
     try {
       const sound = this.sounds.get(trackId);
       if (!sound) {
-        console.warn(`Track ${trackId} not found`);
+        if (__DEV__) console.warn(`Track ${trackId} not found`);
         return;
       }
 
       // Clamp volume between 0 and 1
       const clampedVolume = Math.max(0, Math.min(1, volume));
       await sound.setVolumeAsync(clampedVolume);
-      
+
       this.notifyListeners('volumeChange', { trackId, volume: clampedVolume });
     } catch (error) {
-      console.error(`Error setting volume for track ${trackId}:`, error);
+      if (__DEV__) console.error(`Error setting volume for track ${trackId}:`, error);
       throw error;
     }
   }
@@ -191,14 +191,14 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
     try {
       const sound = this.sounds.get(trackId);
       if (!sound) {
-        console.warn(`Track ${trackId} not found`);
+        if (__DEV__) console.warn(`Track ${trackId} not found`);
         return;
       }
 
       await sound.setIsMutedAsync(isMuted);
       this.notifyListeners('muteChange', { trackId, isMuted });
     } catch (error) {
-      console.error(`Error muting track ${trackId}:`, error);
+      if (__DEV__) console.error(`Error muting track ${trackId}:`, error);
       throw error;
     }
   }
@@ -216,7 +216,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       await Promise.all(promises);
       this.notifyListeners('solo', { trackId });
     } catch (error) {
-      console.error(`Error soloing track ${trackId}:`, error);
+      if (__DEV__) console.error(`Error soloing track ${trackId}:`, error);
       throw error;
     }
   }
@@ -233,7 +233,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       await Promise.all(promises);
       this.notifyListeners('unsolo', {});
     } catch (error) {
-      console.error('Error unsoloing tracks:', error);
+      if (__DEV__) console.error('Error unsoloing tracks:', error);
       throw error;
     }
   }
@@ -253,7 +253,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       }
       return 0;
     } catch (error) {
-      console.error('Error getting position:', error);
+      if (__DEV__) console.error('Error getting position:', error);
       return 0;
     }
   }
@@ -272,7 +272,7 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       }
       return 0;
     } catch (error) {
-      console.error(`Error getting duration for track ${trackId}:`, error);
+      if (__DEV__) console.error(`Error getting duration for track ${trackId}:`, error);
       return 0;
     }
   }
@@ -294,9 +294,9 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
 
       await sound.unloadAsync();
       this.sounds.delete(trackId);
-      console.log(`Track ${trackId} unloaded`);
+      if (__DEV__) console.log(`Track ${trackId} unloaded`);
     } catch (error) {
-      console.error(`Error unloading track ${trackId}:`, error);
+      if (__DEV__) console.error(`Error unloading track ${trackId}:`, error);
     }
   }
 
@@ -313,9 +313,9 @@ private playbackStatuses: Map<string, AVPlaybackStatus> = new Map();
       this.sounds.clear();
       this.isPlaying = false;
       this.currentPosition = 0;
-      console.log('All tracks unloaded');
+      if (__DEV__) console.log('All tracks unloaded');
     } catch (error) {
-      console.error('Error unloading tracks:', error);
+      if (__DEV__) console.error('Error unloading tracks:', error);
     }
   }
 

@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { supabase } from '../lib/supabase';
 
 /**
@@ -24,18 +24,18 @@ async function ensureCacheDir() {
     if (!dirInfo.exists) {
       try {
         await FileSystem.makeDirectoryAsync(AUDIO_CACHE_DIR, { intermediates: true });
-        console.log('[BPM Cache] Created cache directory');
+        if (__DEV__) console.log('[BPM Cache] Created cache directory');
       } catch (mkdirError) {
-        console.warn('[BPM Cache] Could not create directory:', mkdirError);
+        if (__DEV__) console.warn('[BPM Cache] Could not create directory:', mkdirError);
       }
     }
   } catch (error) {
     // Directory doesn't exist, create it
     try {
       await FileSystem.makeDirectoryAsync(AUDIO_CACHE_DIR, { intermediates: true });
-      console.log('[BPM Cache] Created cache directory');
+      if (__DEV__) console.log('[BPM Cache] Created cache directory');
     } catch (mkdirError) {
-      console.warn('[BPM Cache] Could not create directory:', mkdirError);
+      if (__DEV__) console.warn('[BPM Cache] Could not create directory:', mkdirError);
     }
   }
 }
@@ -68,12 +68,12 @@ async function downloadAndCache(signedUrl: string, trackId: string): Promise<str
 
   const cachedPath = getCachedFilePath(trackId);
 
-  console.log('[BPM Cache] Downloading file to cache...');
+  if (__DEV__) console.log('[BPM Cache] Downloading file to cache...');
   try {
     await FileSystem.downloadAsync(signedUrl, cachedPath);
-    console.log('[BPM Cache] File cached at:', cachedPath);
+    if (__DEV__) console.log('[BPM Cache] File cached at:', cachedPath);
   } catch (downloadError) {
-    console.warn('[BPM Cache] Download failed:', downloadError);
+    if (__DEV__) console.warn('[BPM Cache] Download failed:', downloadError);
     throw downloadError;
   }
 
@@ -84,7 +84,7 @@ async function downloadAndCache(signedUrl: string, trackId: string): Promise<str
  * Convert local file to base64 data URL for WebView
  */
 async function fileToDataURL(localPath: string): Promise<string> {
-  console.log('[BPM Detector] Converting file to base64...');
+  if (__DEV__) console.log('[BPM Detector] Converting file to base64...');
 
   const base64 = await FileSystem.readAsStringAsync(localPath, {
     encoding: FileSystem.EncodingType.Base64,
@@ -97,7 +97,7 @@ async function fileToDataURL(localPath: string): Promise<string> {
                    'audio/mpeg'; // default
 
   const dataURL = `data:${mimeType};base64,${base64}`;
-  console.log('[BPM Detector] Base64 data URL created');
+  if (__DEV__) console.log('[BPM Detector] Base64 data URL created');
 
   return dataURL;
 }
@@ -116,7 +116,7 @@ export async function getAudioURL(trackId: string, filePath: string): Promise<{
 
   if (cached) {
     // Use cached file (offline)
-    console.log('[BPM Detector] Using cached file (offline mode)');
+    if (__DEV__) console.log('[BPM Detector] Using cached file (offline mode)');
     const cachedPath = getCachedFilePath(trackId);
     const dataURL = await fileToDataURL(cachedPath);
 
@@ -126,7 +126,7 @@ export async function getAudioURL(trackId: string, filePath: string): Promise<{
     };
   } else {
     // Download from Supabase (online)
-    console.log('[BPM Detector] Fetching from Supabase (online mode)');
+    if (__DEV__) console.log('[BPM Detector] Fetching from Supabase (online mode)');
 
     const { data, error } = await supabase.storage
       .from('audio-files')
@@ -137,9 +137,9 @@ export async function getAudioURL(trackId: string, filePath: string): Promise<{
     // Cache for future offline use
     try {
       await downloadAndCache(data.signedUrl, trackId);
-      console.log('[BPM Detector] File downloaded and cached for future offline use');
+      if (__DEV__) console.log('[BPM Detector] File downloaded and cached for future offline use');
     } catch (cacheError) {
-      console.warn('[BPM Cache] Failed to cache file:', cacheError);
+      if (__DEV__) console.warn('[BPM Cache] Failed to cache file:', cacheError);
       // Continue anyway with online URL
     }
 
@@ -160,7 +160,7 @@ export async function clearTrackCache(trackId: string): Promise<void> {
 
     if (fileInfo.exists) {
       await FileSystem.deleteAsync(cachedPath);
-      console.log('[BPM Cache] Cleared cache for track:', trackId);
+      if (__DEV__) console.log('[BPM Cache] Cleared cache for track:', trackId);
     }
   } catch (error) {
     // File doesn't exist, nothing to clear
@@ -176,7 +176,7 @@ export async function clearAllCache(): Promise<void> {
 
     if (dirInfo.exists) {
       await FileSystem.deleteAsync(AUDIO_CACHE_DIR, { idempotent: true });
-      console.log('[BPM Cache] Cleared all cached audio files');
+      if (__DEV__) console.log('[BPM Cache] Cleared all cached audio files');
     }
   } catch (error) {
     // Directory doesn't exist, nothing to clear

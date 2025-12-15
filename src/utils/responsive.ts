@@ -21,6 +21,14 @@ export const isSmallDevice = SCREEN_WIDTH < BREAKPOINTS.small
 export const isMediumDevice = SCREEN_WIDTH >= BREAKPOINTS.small && SCREEN_WIDTH < BREAKPOINTS.medium
 export const isLargeDevice = SCREEN_WIDTH >= BREAKPOINTS.medium
 
+// Tablet detection
+export const isTablet = (): boolean => {
+  const aspectRatio = SCREEN_HEIGHT / SCREEN_WIDTH
+  return SCREEN_WIDTH >= 768 && aspectRatio < 1.6
+}
+
+export const isLargeTablet = (): boolean => SCREEN_WIDTH >= 1024
+
 // Screen dimensions
 export const screenWidth = SCREEN_WIDTH
 export const screenHeight = SCREEN_HEIGHT
@@ -55,6 +63,14 @@ export const moderateScale = (size: number, factor: number = 0.5): number => {
 export const verticalScale = (size: number): number => {
   const baseHeight = 932 // iPhone Pro Max height
   return Math.round((SCREEN_HEIGHT / baseHeight) * size)
+}
+
+/**
+ * Tablet-specific scaling - increases sizes on tablets
+ */
+export const scaleTablet = (size: number): number => {
+  if (isTablet()) return Math.round(size * 1.2)
+  return scale(size)
 }
 
 /**

@@ -4,9 +4,9 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
-  Image,  // ← ADD THIS
+  Image,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { Colors, Typography, Spacing, BorderRadius } from '../../constants/theme'  // ← ADD THIS
 // Add full logo at top

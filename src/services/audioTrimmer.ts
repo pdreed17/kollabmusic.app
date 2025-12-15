@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Audio, AVPlaybackSource } from 'expo-av';
 import { supabase } from '../lib/supabase';
 import { Platform } from 'react-native';

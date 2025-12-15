@@ -7,12 +7,12 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   Image,
   ScrollView,
   KeyboardAvoidingView,
   Platform,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { authService } from '../../services/auth.service'
 import { Colors, Typography, Spacing, BorderRadius } from '../../constants/theme'
@@ -129,7 +129,7 @@ export function SignupScreen({ navigation }: Props) {
               <Text style={styles.label}>Username *</Text>
               <TextInput
                 style={styles.input}
-                placeholder="musicmaker"
+                placeholder="Your artist name or username"
                 placeholderTextColor={Colors.textTertiary}
                 value={username}
                 onChangeText={setUsername}

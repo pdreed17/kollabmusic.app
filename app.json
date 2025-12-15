@@ -18,7 +18,6 @@
     "ios": {
       "bundleIdentifier": "com.creategood.kollabMusic",
       "supportsTablet": true,
-      "buildNumber": "1",
       "backgroundColor": "#0F0F0F",
       "backgroundModes": [
         "audio"
@@ -27,9 +26,8 @@
         "NSMicrophoneUsageDescription": "This app needs access to the microphone to record audio.",
         "NSPhotoLibraryUsageDescription": "This app needs access to your photo library to upload images.",
         "NSCameraUsageDescription": "This app needs access to the camera to take photos.",
-        "NSBluetoothAlwaysUsageDescription": "Kollab Music uses Bluetooth to discover nearby collaborators for instant audio file sharing.",
-        "NSBluetoothPeripheralUsageDescription": "Kollab Music uses Bluetooth to share audio files with nearby musicians.",
-        "NSLocationWhenInUseUsageDescription": "Location is required for Bluetooth device discovery (iOS system requirement).",
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to external audio devices.",
+        "NSBluetoothPeripheralUsageDescription": "This app uses Bluetooth to connect to external audio devices.",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": [
           "audio"
@@ -46,13 +44,7 @@
       "permissions": [
         "RECORD_AUDIO",
         "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
-        "BLUETOOTH",
-        "BLUETOOTH_ADMIN",
-        "BLUETOOTH_SCAN",
-        "BLUETOOTH_CONNECT",
-        "BLUETOOTH_ADVERTISE",
-        "ACCESS_FINE_LOCATION"
+        "WRITE_EXTERNAL_STORAGE"
       ]
     },
     "web": {

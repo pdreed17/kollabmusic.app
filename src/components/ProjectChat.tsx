@@ -5,7 +5,7 @@
  * Separate from audio timeline comments
  */
 
-import React, { useEffect, useState, useRef } from 'react'
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import {
   View,
   Text,
@@ -54,26 +54,10 @@ export default function ProjectChat({
   const [sending, setSending] = useState(false)
   const scrollViewRef = useRef<ScrollView>(null)
 
-  // Load messages on mount
-  useEffect(() => {
-    loadMessages()
-    const unsubscribe = subscribeToMessages()
-    return unsubscribe
-  }, [projectId])
-
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    if (messages.length > 0) {
-      setTimeout(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true })
-      }, 100)
-    }
-  }, [messages])
-
   /**
    * Load all messages for this project
    */
-  const loadMessages = async () => {
+  const loadMessages = useCallback(async () => {
     try {
       setLoading(true)
 
@@ -100,7 +84,7 @@ export default function ProjectChat({
         .select('id, username, display_name, avatar_url')
         .in('id', userIds)
 
-      if (usersError) {
+      if (usersError && __DEV__) {
         console.error('Error fetching users:', usersError)
       }
 
@@ -117,17 +101,17 @@ export default function ProjectChat({
 
       setMessages(messagesWithUsers)
     } catch (error) {
-      console.error('Error loading messages:', error)
+      if (__DEV__) console.error('Error loading messages:', error)
       Alert.alert('Error', 'Failed to load messages')
     } finally {
       setLoading(false)
     }
-  }
+  }, [projectId])
 
   /**
    * Subscribe to real-time message updates
    */
-  const subscribeToMessages = () => {
+  const subscribeToMessages = useCallback(() => {
     const channel = supabase
       .channel(`project-chat:${projectId}`)
       .on(
@@ -163,12 +147,28 @@ export default function ProjectChat({
     return () => {
       channel.unsubscribe()
     }
-  }
+  }, [projectId])
+
+  // Load messages on mount
+  useEffect(() => {
+    loadMessages()
+    const unsubscribe = subscribeToMessages()
+    return unsubscribe
+  }, [loadMessages, subscribeToMessages])
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (messages.length > 0) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true })
+      }, 100)
+    }
+  }, [messages])
 
   /**
    * Send a new message
    */
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     if (!newMessage.trim()) return
 
     try {
@@ -187,17 +187,17 @@ export default function ProjectChat({
       // Reload messages to ensure the new message appears
       await loadMessages()
     } catch (error) {
-      console.error('Error sending message:', error)
+      if (__DEV__) console.error('Error sending message:', error)
       Alert.alert('Error', 'Failed to send message')
     } finally {
       setSending(false)
     }
-  }
+  }, [newMessage, projectId, currentUserId, loadMessages])
 
   /**
    * Delete a message (only own messages)
    */
-  const deleteMessage = async (messageId: string) => {
+  const deleteMessage = useCallback(async (messageId: string) => {
     try {
       const { error } = await supabase
         .from('project_messages')
@@ -208,15 +208,15 @@ export default function ProjectChat({
 
       setMessages((prev) => prev.filter((msg) => msg.id !== messageId))
     } catch (error) {
-      console.error('Error deleting message:', error)
+      if (__DEV__) console.error('Error deleting message:', error)
       Alert.alert('Error', 'Failed to delete message')
     }
-  }
+  }, [])
 
   /**
    * Format timestamp for display
    */
-  const formatTimestamp = (timestamp: string): string => {
+  const formatTimestamp = useCallback((timestamp: string): string => {
     const date = new Date(timestamp)
     const now = new Date()
     const diff = now.getTime() - date.getTime()
@@ -243,12 +243,12 @@ export default function ProjectChat({
 
     // Older
     return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  }
+  }, [])
 
   /**
    * Group messages by date
    */
-  const groupMessagesByDate = (messages: ProjectMessage[]) => {
+  const groupMessagesByDate = useCallback((messages: ProjectMessage[]) => {
     const groups: { [key: string]: ProjectMessage[] } = {}
 
     messages.forEach((msg) => {
@@ -258,9 +258,9 @@ export default function ProjectChat({
     })
 
     return groups
-  }
+  }, [])
 
-  const messageGroups = groupMessagesByDate(messages)
+  const messageGroups = useMemo(() => groupMessagesByDate(messages), [messages, groupMessagesByDate])
 
   if (loading) {
     return (

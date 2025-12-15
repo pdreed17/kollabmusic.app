@@ -350,7 +350,7 @@ export async function getSpotifyRecommendations(
 
     return scoredRecommendations;
   } catch (error) {
-    console.error('Spotify recommendations error:', error);
+    if (__DEV__) console.error('Spotify recommendations error:', error);
     throw error;
   }
 }

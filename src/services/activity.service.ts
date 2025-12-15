@@ -25,6 +25,9 @@ export interface ActivityFeedItem {
   icon: string
   color: string
   project_id?: string
+  from_connection?: boolean
+  user_id?: string
+  username?: string
 }
 
 export interface UserStats {
@@ -67,7 +70,7 @@ export const getUserActivityFeed = async (userId: string, limit: number = 20): P
 
     // Get collaborations joined
     const { data: collaborations, error: collabError } = await supabase
-      .from('collaborators')
+      .from('project_collaborators')
       .select(`
         id,
         created_at,
@@ -111,7 +114,7 @@ export const getUserActivityFeed = async (userId: string, limit: number = 20): P
           title
         )
       `)
-      .eq('created_by', userId)
+      .eq('creator_id', userId)
       .order('created_at', { ascending: false })
       .limit(5)
 
@@ -166,18 +169,100 @@ export const getUserActivityFeed = async (userId: string, limit: number = 20): P
       })
     }
 
-    // Sort all activities by timestamp and limit
+    // Get activities from connected users
+    const { data: connections, error: connectionsError } = await supabase
+      .from('user_connections')
+      .select('following_id')
+      .eq('user_id', userId)
+
+    if (!connectionsError && connections && connections.length > 0) {
+      const connectedUserIds = connections.map(c => c.following_id)
+
+      // Get connected users' projects
+      const { data: connectedProjects, error: connectedProjectsError } = await supabase
+        .from('projects')
+        .select('id, title, created_at, creator_id, users:creator_id(username)')
+        .in('creator_id', connectedUserIds)
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (!connectedProjectsError && connectedProjects) {
+        connectedProjects.forEach((project: any) => {
+          activities.push({
+            id: `connected-project-${project.id}`,
+            type: 'project_created',
+            title: 'Project Created',
+            description: `${project.users?.username || 'A connection'} created "${project.title}"`,
+            timestamp: formatTimestamp(project.created_at || new Date().toISOString()),
+            icon: 'musical-notes',
+            color: '#6366F1',
+            project_id: project.id,
+            from_connection: true,
+            user_id: project.creator_id,
+            username: project.users?.username,
+          })
+        })
+      }
+
+      // Get connected users' file uploads
+      const { data: connectedFiles, error: connectedFilesError } = await supabase
+        .from('audio_files')
+        .select(`
+          id,
+          file_name,
+          created_at,
+          created_by,
+          users:created_by(username),
+          projects:project_id (
+            id,
+            title
+          )
+        `)
+        .in('created_by', connectedUserIds)
+        .order('created_at', { ascending: false })
+        .limit(10)
+
+      if (!connectedFilesError && connectedFiles) {
+        connectedFiles.forEach((file: any) => {
+          if (file.projects) {
+            activities.push({
+              id: `connected-file-${file.id}`,
+              type: 'file_uploaded',
+              title: 'File Uploaded',
+              description: `${file.users?.username || 'A connection'} added "${file.file_name}" to "${file.projects.title}"`,
+              timestamp: formatTimestamp(file.created_at),
+              icon: 'cloud-upload',
+              color: '#3B82F6',
+              project_id: file.projects.id,
+              from_connection: true,
+              user_id: file.created_by,
+              username: file.users?.username,
+            })
+          }
+        })
+      }
+    }
+
+    // Sort all activities with priority for connections
     const sortedActivities = activities
       .sort((a, b) => {
         const dateA = new Date(a.timestamp).getTime()
         const dateB = new Date(b.timestamp).getTime()
+
+        // If timestamps are within 1 hour of each other, prioritize connections
+        if (Math.abs(dateA - dateB) < 3600000) {
+          if (a.from_connection && !b.from_connection) return -1
+          if (!a.from_connection && b.from_connection) return 1
+        }
+
+        // Otherwise sort by timestamp
         return dateB - dateA
       })
       .slice(0, limit)
 
     return sortedActivities
   } catch (error) {
-    console.error('Error loading activity feed:', error)
+    if (__DEV__) console.error('Error loading activity feed:', error)
     throw error
   }
 }
@@ -207,7 +292,7 @@ export const getUserStats = async (userId: string): Promise<UserStats> => {
 
       // Count projects where user is a collaborator (not owner)
       supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', userId)
         .eq('invitation_status', 'accepted')
@@ -217,12 +302,12 @@ export const getUserStats = async (userId: string): Promise<UserStats> => {
       supabase
         .from('audio_files')
         .select('*', { count: 'exact', head: true })
-        .eq('created_by', userId),
+        .eq('creator_id', userId),
 
       // Get unique collaborators on user's projects
       projectIds.length > 0
         ? supabase
-            .from('collaborators')
+            .from('project_collaborators')
             .select('user_id')
             .in('project_id', projectIds)
             .eq('invitation_status', 'accepted')
@@ -238,7 +323,7 @@ export const getUserStats = async (userId: string): Promise<UserStats> => {
       totalCollaborators: uniqueCollaborators.size,
     }
   } catch (error) {
-    console.error('Error loading user stats:', error)
+    if (__DEV__) console.error('Error loading user stats:', error)
     return {
       projectsCreated: 0,
       collaborations: 0,
@@ -282,5 +367,5 @@ export const logActivity = async (
   // This is a stub for future implementation
   // You could create an 'activities' table in Supabase to track all activities
   // For now, we derive activities from existing tables
-  console.log('Activity logged:', { userId, activityType, metadata })
+  if (__DEV__) console.log('Activity logged:', { userId, activityType, metadata })
 }

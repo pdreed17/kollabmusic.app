@@ -1,25 +1,26 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   Alert,
   ActivityIndicator,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
+import { useFocusEffect } from '@react-navigation/native'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
+import { canAcceptCollaboration, showUpgradeAlert } from '../utils/subscriptionLimits'
 
 interface Invitation {
   id: string
   project_id: string
   role: string
-  created_at: string | null
   invited_by?: string | null
   project: {
     id?: string
@@ -43,17 +44,23 @@ export default function PendingInvitationsScreen({ navigation }: any) {
     loadInvitations()
   }, [])
 
+  // Reload invitations when screen comes into focus to sync with other screens
+  useFocusEffect(
+    useCallback(() => {
+      loadInvitations()
+    }, [user?.id])
+  )
+
   const loadInvitations = async () => {
     try {
       if (!user?.id) return
 
       // Get pending invitations
       const { data: inviteData, error: inviteError } = await supabase
-        .from('collaborators')
-        .select('id, project_id, role, created_at, invited_by')
+        .from('project_collaborators')
+        .select('id, project_id, role, invited_by')
         .eq('user_id', user.id)
         .eq('invitation_status', 'pending')
-        .order('created_at', { ascending: false })
 
       if (inviteError) throw inviteError
 
@@ -100,19 +107,31 @@ export default function PendingInvitationsScreen({ navigation }: any) {
   }
 
   const handleAccept = async (invitation: Invitation) => {
+    if (!user?.id) return
+
     setProcessing(invitation.id)
+
     try {
+      // Check subscription limits before accepting
+      const limitCheck = await canAcceptCollaboration(user.id)
+      if (!limitCheck.allowed) {
+        setProcessing(null)
+        showUpgradeAlert(limitCheck.reason || 'Unable to accept invitation', navigation)
+        return
+      }
+
       const { error } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .update({
-          invitation_status: 'accepted',
-          invitation_accepted_at: new Date().toISOString()
+          invitation_status: 'accepted'
         })
         .eq('id', invitation.id)
 
       if (error) throw error
 
-      setInvitations(prev => prev.filter(i => i.id !== invitation.id))
+      // Remove from state after successful database update
+      setInvitations(prev => prev.filter(inv => inv.id !== invitation.id))
+
       Alert.alert('Success', 'Invitation accepted!')
     } catch (error) {
       console.error('Error accepting invitation:', error)
@@ -133,15 +152,18 @@ export default function PendingInvitationsScreen({ navigation }: any) {
           style: 'destructive',
           onPress: async () => {
             setProcessing(invitation.id)
+
             try {
               const { error } = await supabase
-                .from('collaborators')
+                .from('project_collaborators')
                 .update({ invitation_status: 'declined' })
                 .eq('id', invitation.id)
 
               if (error) throw error
 
-              setInvitations(prev => prev.filter(i => i.id !== invitation.id))
+              // Remove from state after successful database update
+              setInvitations(prev => prev.filter(inv => inv.id !== invitation.id))
+
               Alert.alert('Declined', 'Invitation declined')
             } catch (error) {
               console.error('Error declining invitation:', error)
@@ -208,10 +230,8 @@ export default function PendingInvitationsScreen({ navigation }: any) {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header
+        <CompactHeader
           title="Pending Invitations"
-          variant="compact"
-          showBack={true}
           onBack={() => navigation.goBack()}
         />
         <View style={styles.loadingContainer}>
@@ -223,10 +243,8 @@ export default function PendingInvitationsScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Pending Invitations"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
       />
 

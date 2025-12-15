@@ -45,7 +45,7 @@ export default function InvitationsBadge({ onPress, variant = 'large' }: Invitat
       if (!user?.id) return
 
       const { count: inviteCount, error } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', user.id)
         .eq('invitation_status', 'pending')

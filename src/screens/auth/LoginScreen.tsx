@@ -7,12 +7,12 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   Image,
   KeyboardAvoidingView,
   ScrollView,
   Platform,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { NativeStackNavigationProp } from '@react-navigation/native-stack'
 import { authService } from '../../services/auth.service'
 import { Colors, Typography, Spacing, BorderRadius } from '../../constants/theme'
@@ -164,10 +164,20 @@ const styles = StyleSheet.create({
   inputGroup: {
     gap: Spacing.xs,
   },
+  passwordHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
   label: {
     ...Typography.body,
     fontWeight: '600',
     color: Colors.text,
+  },
+  forgotPasswordLink: {
+    ...Typography.body,
+    color: Colors.primary,
+    fontWeight: '600',
   },
   input: {
     backgroundColor: Colors.surface,

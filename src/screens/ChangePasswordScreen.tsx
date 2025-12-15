@@ -3,17 +3,17 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TextInput,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 export default function ChangePasswordScreen({ navigation }: any) {
   const [currentPassword, setCurrentPassword] = useState('')
@@ -116,11 +116,9 @@ export default function ChangePasswordScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Change Password"
         subtitle="Security"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
       />
 

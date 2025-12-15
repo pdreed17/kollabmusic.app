@@ -1,20 +1,21 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   ActivityIndicator,
+  FlatList,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 import { checkIfBlocked } from '../utils/blockingHelpers'
 
 const ROLES = [
@@ -45,34 +46,6 @@ const ROLES = [
       can_comment: true,
       can_download: true
     }
-  },
-  {
-    value: 'commenter',
-    label: 'Commenter',
-    description: 'Can only view and comment',
-    icon: 'chatbubble',
-    permissions: {
-      can_edit: false,
-      can_delete: false,
-      can_invite: false,
-      can_upload: false,
-      can_comment: true,
-      can_download: false
-    }
-  },
-  {
-    value: 'viewer',
-    label: 'Viewer',
-    description: 'Can only view the project',
-    icon: 'eye',
-    permissions: {
-      can_edit: false,
-      can_delete: false,
-      can_invite: false,
-      can_upload: false,
-      can_comment: false,
-      can_download: false
-    }
   }
 ]
 
@@ -83,6 +56,49 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
   const [selectedRole, setSelectedRole] = useState('editor')
   const [searching, setSearching] = useState(false)
   const [inviting, setInviting] = useState(false)
+  const [userSuggestions, setUserSuggestions] = useState<any[]>([])
+  const [showSuggestions, setShowSuggestions] = useState(false)
+
+  // Search for users as they type
+  useEffect(() => {
+    const searchUsers = async () => {
+      if (username.trim().length < 2) {
+        setUserSuggestions([])
+        setShowSuggestions(false)
+        return
+      }
+
+      setSearching(true)
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, username, display_name, avatar_url')
+          .ilike('username', `${username.trim()}%`)
+          .neq('id', user?.id) // Don't show current user
+          .limit(5)
+
+        if (!error && data) {
+          setUserSuggestions(data)
+          setShowSuggestions(data.length > 0)
+        }
+      } catch (error) {
+        console.error('Error searching users:', error)
+      } finally {
+        setSearching(false)
+      }
+    }
+
+    const delaySearch = setTimeout(() => {
+      searchUsers()
+    }, 300) // Debounce search
+
+    return () => clearTimeout(delaySearch)
+  }, [username, user?.id])
+
+  const selectUser = (selectedUser: any) => {
+    setUsername(selectedUser.username)
+    setShowSuggestions(false)
+  }
 
   const handleInvite = async () => {
     if (!username.trim()) {
@@ -123,7 +139,7 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
 
       // Check if already a collaborator
       const { data: existingCollab, error: checkError } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select('id, invitation_status')
         .eq('project_id', projectId)
         .eq('user_id', inviteeUser.id)
@@ -133,7 +149,7 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
 
       if (existingCollab) {
         if (existingCollab.invitation_status === 'accepted') {
-          Alert.alert('Already a Collaborator', 'This user is already collaborating on this project')
+          Alert.alert('Already a Kollaborator', 'This user is already kollaborating on this project')
         } else if (existingCollab.invitation_status === 'pending') {
           Alert.alert('Invitation Pending', 'This user already has a pending invitation')
         } else {
@@ -149,7 +165,7 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
 
       // Create invitation
       const { error: inviteError } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .insert({
           project_id: projectId,
           user_id: inviteeUser.id,
@@ -166,14 +182,14 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
 
       Alert.alert(
         'Invitation Sent!',
-        `${inviteeUser.display_name || inviteeUser.username} has been invited to collaborate`,
+        `${inviteeUser.display_name || inviteeUser.username} has been invited to kollab`,
         [
           { text: 'OK', onPress: () => navigation.goBack() }
         ]
       )
     } catch (error: any) {
-      console.error('Error inviting collaborator:', error)
-      Alert.alert('Error', error.message || 'Failed to invite collaborator')
+      console.error('Error inviting kollaborator:', error)
+      Alert.alert('Error', error.message || 'Failed to invite kollaborator')
     } finally {
       setInviting(false)
     }
@@ -181,10 +197,8 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
-        title="Invite Collaborator"
-        variant="compact"
-        showBack={true}
+      <CompactHeader
+        title="Invite Kollaborator"
         onBack={() => navigation.goBack()}
       />
 
@@ -203,9 +217,35 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
               autoCapitalize="none"
               autoCorrect={false}
             />
+            {searching && <ActivityIndicator size="small" color={Colors.primary} />}
           </View>
+
+          {/* User Suggestions Dropdown */}
+          {showSuggestions && userSuggestions.length > 0 && (
+            <View style={styles.suggestionsContainer}>
+              {userSuggestions.map((suggestion) => (
+                <TouchableOpacity
+                  key={suggestion.id}
+                  style={styles.suggestionItem}
+                  onPress={() => selectUser(suggestion)}
+                >
+                  <View style={styles.suggestionInfo}>
+                    <Text style={styles.suggestionUsername}>@{suggestion.username}</Text>
+                    {suggestion.display_name && (
+                      <Text style={styles.suggestionDisplayName}>{suggestion.display_name}</Text>
+                    )}
+                  </View>
+                  <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+
           <Text style={styles.helperText}>
-            Enter the exact username of the person you want to invite
+            {showSuggestions && userSuggestions.length > 0
+              ? 'Tap a username to select'
+              : 'Start typing to see suggestions'
+            }
           </Text>
         </View>
 
@@ -213,7 +253,7 @@ export default function InviteCollaboratorScreen({ route, navigation }: any) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Select Role</Text>
           <Text style={styles.sectionSubtitle}>
-            Choose what level of access this collaborator will have
+            Choose what level of access this kollaborator will have
           </Text>
 
           {ROLES.map((role) => (
@@ -449,5 +489,35 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: Spacing.xxxl,
+  },
+  suggestionsContainer: {
+    marginTop: Spacing.sm,
+    backgroundColor: Colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: BorderRadius.md,
+    overflow: 'hidden',
+  },
+  suggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  suggestionInfo: {
+    flex: 1,
+  },
+  suggestionUsername: {
+    ...Typography.body,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  suggestionDisplayName: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    marginTop: 2,
   },
 })

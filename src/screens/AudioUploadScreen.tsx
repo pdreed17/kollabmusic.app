@@ -4,19 +4,20 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   ActivityIndicator,
   TextInput,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import * as DocumentPicker from 'expo-document-picker'
 import { Ionicons } from '@expo/vector-icons'
 import { Audio } from 'expo-av'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
+import { canUploadToProject, showUpgradeAlert } from '../utils/subscriptionLimits'
 
 type StemType = 'vocals' | 'drums' | 'bass' | 'guitar' | 'keys' | 'synth' | 'fx' | 'multiple' | 'other'
 
@@ -70,8 +71,17 @@ interface AudioFileRecord {
 }
 
 export default function AudioUploadScreen({ route, navigation }: any) {
-  const { projectId } = route.params
+  const { projectId } = route.params || {}
   const { user, userProfile } = useAuth()
+
+  // Validate required params
+  if (!projectId) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: Colors.backgroundDark, justifyContent: 'center', alignItems: 'center' }}>
+        <Text style={{ color: Colors.error }}>Error: No project selected</Text>
+      </SafeAreaView>
+    )
+  }
 
   // File state
   const [selectedFile, setSelectedFile] = useState<any>(null)
@@ -127,7 +137,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
       }
       return null
     } catch (error) {
-      console.error('Error getting duration:', error)
+      if (__DEV__) console.error('Error getting duration:', error)
       return null
     }
   }
@@ -178,7 +188,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
 
       processFile(file)
     } catch (error) {
-      console.error('Error selecting file:', error)
+      if (__DEV__) console.error('Error selecting file:', error)
       Alert.alert('Error', 'Failed to select file')
     }
   }
@@ -210,12 +220,12 @@ export default function AudioUploadScreen({ route, navigation }: any) {
         )
         setPreviewSound(sound)
       } catch (error) {
-        console.error('Error creating preview sound:', error)
+        if (__DEV__) console.error('Error creating preview sound:', error)
         // Continue without preview - not critical
       }
 
     } catch (error) {
-      console.error('Error selecting file:', error)
+      if (__DEV__) console.error('Error selecting file:', error)
       Alert.alert('Error', 'Failed to select file')
     }
   }
@@ -258,7 +268,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
       ;(recording as any).durationInterval = durationInterval
 
     } catch (error) {
-      console.error('Error starting recording:', error)
+      if (__DEV__) console.error('Error starting recording:', error)
       Alert.alert('Error', 'Failed to start recording')
     }
   }
@@ -298,7 +308,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
         playsInSilentModeIOS: true,
       })
     } catch (error) {
-      console.error('Error stopping recording:', error)
+      if (__DEV__) console.error('Error stopping recording:', error)
       Alert.alert('Error', 'Failed to stop recording')
     }
   }
@@ -323,7 +333,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
         playsInSilentModeIOS: true,
       })
     } catch (error) {
-      console.error('Error canceling recording:', error)
+      if (__DEV__) console.error('Error canceling recording:', error)
     }
   }
 
@@ -347,7 +357,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
         })
       }
     } catch (error) {
-      console.error('Error playing preview:', error)
+      if (__DEV__) console.error('Error playing preview:', error)
       Alert.alert('Playback Error', 'Could not play audio preview')
     }
   }
@@ -369,6 +379,26 @@ export default function AudioUploadScreen({ route, navigation }: any) {
     }
 
     try {
+      // Check subscription limits
+      const { data: project } = await supabase
+        .from('projects')
+        .select('creator_id')
+        .eq('id', projectId)
+        .single()
+
+      if (!project) {
+        Alert.alert('Error', 'Project not found')
+        return
+      }
+
+      const isOwner = project.creator_id === user.id
+      const limitCheck = await canUploadToProject(user.id, projectId, isOwner)
+
+      if (!limitCheck.allowed) {
+        showUpgradeAlert(limitCheck.reason || 'Unable to upload audio', navigation)
+        return
+      }
+
       setUploading(true)
       setUploadProgress(0)
 
@@ -441,7 +471,12 @@ export default function AudioUploadScreen({ route, navigation }: any) {
         .select()
         .single()
 
-      if (dbError) throw dbError
+      if (dbError) {
+        // Cleanup: Remove orphaned file from storage since DB insert failed
+        if (__DEV__) console.log('DB insert failed, cleaning up storage file:', filePath)
+        await supabase.storage.from('audio-files').remove([filePath])
+        throw dbError
+      }
 
       // Cleanup
       if (previewSound) {
@@ -472,7 +507,7 @@ export default function AudioUploadScreen({ route, navigation }: any) {
       )
 
     } catch (error: any) {
-      console.error('Error uploading file:', error)
+      if (__DEV__) console.error('Error uploading file:', error)
       Alert.alert('Upload Failed', error.message || 'Failed to upload file')
     } finally {
       setUploading(false)
@@ -510,14 +545,9 @@ export default function AudioUploadScreen({ route, navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Upload Audio"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
 
       <ScrollView 

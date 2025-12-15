@@ -8,12 +8,12 @@ export const checkIfBlocked = async (userId1: string, userId2: string): Promise<
     const { data, error } = await supabase
       .from('blocked_users' as any)
       .select('id')
-      .or(`and(user_id.eq.${userId1},blocked_user_id.eq.${userId2}),and(user_id.eq.${userId2},blocked_user_id.eq.${userId1})`) as any
-    
+      .or(`and(blocker_id.eq.${userId1},blocked_id.eq.${userId2}),and(blocker_id.eq.${userId2},blocked_id.eq.${userId1})`) as any
+
     if (error) throw error
     return (data && data.length > 0)
   } catch (error) {
-    console.error('Error checking blocked status:', error)
+    if (__DEV__) console.error('Error checking blocked status:', error)
     return false
   }
 }
@@ -25,13 +25,13 @@ export const getBlockedUserIds = async (userId: string): Promise<string[]> => {
   try {
     const { data, error } = await supabase
       .from('blocked_users' as any)
-      .select('blocked_user_id')
-      .eq('user_id', userId) as any
-    
+      .select('blocked_id')
+      .eq('blocker_id', userId) as any
+
     if (error) throw error
-    return data?.map((b: any) => b.blocked_user_id) || []
+    return data?.map((b: any) => b.blocked_id) || []
   } catch (error) {
-    console.error('Error getting blocked users:', error)
+    if (__DEV__) console.error('Error getting blocked users:', error)
     return []
   }
 }
@@ -43,13 +43,13 @@ export const getUsersWhoBlockedMe = async (userId: string): Promise<string[]> =>
   try {
     const { data, error } = await supabase
       .from('blocked_users' as any)
-      .select('user_id')
-      .eq('blocked_user_id', userId) as any
-    
+      .select('blocker_id')
+      .eq('blocked_id', userId) as any
+
     if (error) throw error
-    return data?.map((b: any) => b.user_id) || []
+    return data?.map((b: any) => b.blocker_id) || []
   } catch (error) {
-    console.error('Error getting users who blocked me:', error)
+    if (__DEV__) console.error('Error getting users who blocked me:', error)
     return []
   }
 }
@@ -75,14 +75,14 @@ export const blockUser = async (userId: string, userToBlockId: string): Promise<
     const { error } = await supabase
       .from('blocked_users' as any)
       .insert({
-        user_id: userId,
-        blocked_user_id: userToBlockId,
+        blocker_id: userId,
+        blocked_id: userToBlockId,
       }) as any
-    
+
     if (error) throw error
     return true
   } catch (error) {
-    console.error('Error blocking user:', error)
+    if (__DEV__) console.error('Error blocking user:', error)
     return false
   }
 }
@@ -95,13 +95,13 @@ export const unblockUser = async (userId: string, userToUnblockId: string): Prom
     const { error } = await supabase
       .from('blocked_users' as any)
       .delete()
-      .eq('user_id', userId)
-      .eq('blocked_user_id', userToUnblockId) as any
-    
+      .eq('blocker_id', userId)
+      .eq('blocked_id', userToUnblockId) as any
+
     if (error) throw error
     return true
   } catch (error) {
-    console.error('Error unblocking user:', error)
+    if (__DEV__) console.error('Error unblocking user:', error)
     return false
   }
 }

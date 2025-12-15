@@ -4,19 +4,19 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   ActivityIndicator,
   TextInput,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import * as DocumentPicker from 'expo-document-picker'
 import { Ionicons } from '@expo/vector-icons'
 import { Audio } from 'expo-av'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 // Support all professional audio formats
 const ALLOWED_FORMATS = [
@@ -422,7 +422,15 @@ export default function HighlightUploadScreen({ navigation }: any) {
           order_index: nextOrderIndex,
         })
 
-      if (dbError) throw dbError
+      if (dbError) {
+        // Cleanup uploaded file if database insertion fails
+        try {
+          await supabase.storage.from('highlights').remove([filePath])
+        } catch (cleanupError) {
+          console.error('Failed to cleanup file after database error:', cleanupError)
+        }
+        throw dbError
+      }
 
       setUploadProgress(100)
 
@@ -467,14 +475,9 @@ export default function HighlightUploadScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Add Highlight"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
 
       <ScrollView

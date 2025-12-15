@@ -4,20 +4,20 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   Alert,
   ActivityIndicator,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 interface BlockedUser {
   id: string
-  blocked_user_id: string
+  blocked_id: string
   blocked_username: string
   blocked_display_name: string
 }
@@ -38,8 +38,8 @@ export default function BlockedUsersScreen({ navigation }: any) {
       // Get blocked user IDs (with type assertion to fix TypeScript error)
       const { data: blockedData, error: blockedError } = await supabase
         .from('blocked_users' as any)
-        .select('id, blocked_user_id')
-        .eq('user_id', user.id) as any
+        .select('id, blocked_id')
+        .eq('blocker_id', user.id) as any
       
       if (blockedError) throw blockedError
       
@@ -50,20 +50,20 @@ export default function BlockedUsersScreen({ navigation }: any) {
       }
 
       // Get user details for blocked users
-      const blockedUserIds = blockedData.map((b: any) => b.blocked_user_id)
+      const blockedUserIds = blockedData.map((b: any) => b.blocked_id)
       const { data: usersData, error: usersError } = await supabase
         .from('users')
         .select('id, username, display_name')
         .in('id', blockedUserIds)
-      
+
       if (usersError) throw usersError
 
       // Combine the data
       const combined = blockedData.map((blocked: any) => {
-        const userInfo = usersData?.find((u: any) => u.id === blocked.blocked_user_id)
+        const userInfo = usersData?.find((u: any) => u.id === blocked.blocked_id)
         return {
           id: blocked.id,
-          blocked_user_id: blocked.blocked_user_id,
+          blocked_id: blocked.blocked_id,
           blocked_username: userInfo?.username || 'Unknown',
           blocked_display_name: userInfo?.display_name || userInfo?.username || 'Unknown User',
         }
@@ -96,12 +96,12 @@ export default function BlockedUsersScreen({ navigation }: any) {
               const { error } = await supabase
                 .from('blocked_users' as any)
                 .delete()
-                .eq('user_id', user.id)
-                .eq('blocked_user_id', blockedUserId) as any
-              
+                .eq('blocker_id', user.id)
+                .eq('blocked_id', blockedUserId) as any
+
               if (error) throw error
-              
-              setBlockedUsers(prev => prev.filter(b => b.blocked_user_id !== blockedUserId))
+
+              setBlockedUsers(prev => prev.filter(b => b.blocked_id !== blockedUserId))
               Alert.alert('Success', 'User unblocked')
             } catch (error) {
               console.error('Unblock error:', error)
@@ -128,7 +128,7 @@ export default function BlockedUsersScreen({ navigation }: any) {
       </View>
       <TouchableOpacity
         style={styles.unblockButton}
-        onPress={() => handleUnblock(item.blocked_user_id)}
+        onPress={() => handleUnblock(item.blocked_id)}
       >
         <Text style={styles.unblockText}>Unblock</Text>
       </TouchableOpacity>
@@ -138,7 +138,7 @@ export default function BlockedUsersScreen({ navigation }: any) {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header title="Blocked Users" variant="compact" showBack={true} onBack={() => navigation.goBack()} />
+        <CompactHeader title="Blocked Users" onBack={() => navigation.goBack()} />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
         </View>
@@ -148,7 +148,7 @@ export default function BlockedUsersScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Blocked Users" variant="compact" showBack={true} onBack={() => navigation.goBack()} />
+      <CompactHeader title="Blocked Users" onBack={() => navigation.goBack()} />
       {blockedUsers.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="ban-outline" size={64} color={Colors.textSecondary} />

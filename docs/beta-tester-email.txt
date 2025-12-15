@@ -1,0 +1,49 @@
+Subject: Help Beta Test Kollab - A Music Collaboration App for Creators
+
+---
+
+Hi there,
+
+I'm wrapping up development on Kollab - a music collaboration platform that lets musicians work together on projects from anywhere.
+
+What is Kollab?
+
+It's a mobile app built for making music together:
+
+- Create projects with metadata (title, genre, BPM, key, time signature)
+- Upload audio stems - vocals, drums, bass, guitar, keys, synth, and more
+- Mix tracks with volume, pan, mute, and solo controls
+- Add timestamped comments directly on the audio timeline
+- Real-time chat with your collaborators
+- Invite collaborators with role-based permissions (viewer, contributor, editor, admin)
+- Automatic BPM detection from your audio files
+- Follow other musicians and discover their projects
+- Showcase your work with audio highlights on your profile
+
+Why I Need Your Help
+
+I'm looking for a small group of beta testers to help catch bugs and provide feedback before the public launch. Your input will directly shape the app.
+
+Current Availability:
+- iOS (iPhone) - Ready now via TestFlight
+- Android - Coming soon
+
+If you're an iPhone user and interested:
+
+1. Download TestFlight from the App Store (Apple's official beta testing app)
+2. Reply to this email with your Apple ID email, and I'll send you an invite
+3. Test the app and share any feedback or issues you encounter
+
+Even 10-15 minutes of exploring would be incredibly helpful. I'm especially interested in feedback on:
+
+- Creating projects and uploading audio
+- The mixer and playback experience
+- Any crashes or errors you encounter
+- Features you wish existed
+
+Android users - I haven't forgotten you! Reply if you're interested and I'll reach out when the Android version is ready.
+
+Thanks for considering this. Making music should be collaborative and accessible - and your help gets us closer to that goal.
+
+Best,
+[Your Name]

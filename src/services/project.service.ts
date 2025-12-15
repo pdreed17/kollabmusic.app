@@ -34,7 +34,7 @@ class ProjectService {
 
       if (error) throw error
 
-      await supabase.from('collaborators').insert({
+      await supabase.from('project_collaborators').insert({
         project_id: project.id,
         user_id: creatorId,
         role: 'owner',
@@ -151,7 +151,7 @@ class ProjectService {
     try {
       const permissions = this.getRolePermissions(role)
 
-      const { error } = await supabase.from('collaborators').insert({
+      const { error } = await supabase.from('project_collaborators').insert({
         project_id: projectId,
         user_id: userId,
         role,

@@ -12,11 +12,12 @@ import {
   Dimensions,
   Alert,
   ActivityIndicator,
-  SafeAreaView,
   TextInput,
   Modal,
   PanResponder,
+  Keyboard,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -25,7 +26,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme';
 import { scale } from '../utils/responsive';
-import Header from '../components/Header';
+import CompactHeader from '../components/CompactHeader';
 import ProjectChat from '../components/ProjectChat';
 import { AudioTrimmer } from '../services/audioTrimmer';
 import { getAudioURL } from '../services/webAudioBpmDetector';
@@ -125,6 +126,15 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
   const [project, setProject] = useState<any>(null);
   const [isCollaborator, setIsCollaborator] = useState(false);
 
+  // Permission state for granular access control
+  const [userPermissions, setUserPermissions] = useState({
+    canEdit: false,
+    canDelete: false,
+    canUpload: false,
+    canDownload: false,
+    canComment: true, // Default true for public viewers
+  });
+
   // Audio Player State
   const [sound, setSound] = useState<Audio.Sound | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -172,10 +182,87 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
   const progressBarX = useRef(0);
   const minimizedProgressBarWidth = useRef(0);
 
+  // Refs to avoid stale closures in audio callbacks
+  const selectedTrackRef = useRef<AudioTrack | null>(null);
+  const soundRef = useRef<Audio.Sound | null>(null);
+
+  // Keep refs in sync with state
   useEffect(() => {
-    loadProjectData();
-    return cleanup;
-  }, [projectId]);
+    selectedTrackRef.current = selectedTrack;
+  }, [selectedTrack]);
+
+  useEffect(() => {
+    soundRef.current = sound;
+  }, [sound]);
+
+  // Configure audio mode for iOS
+  useEffect(() => {
+    const setupAudioMode = async () => {
+      try {
+        await Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: true,
+          staysActiveInBackground: true,
+          shouldDuckAndroid: true,
+        });
+        console.log('Audio mode configured for ProjectStudioScreen');
+      } catch (error) {
+        console.error('Error setting audio mode:', error);
+      }
+    };
+    setupAudioMode();
+  }, []);
+
+  useEffect(() => {
+    if (projectId && user?.id) {
+      loadProjectData();
+
+      // Set up real-time subscriptions for tracks and comments
+      const tracksChannel = supabase
+        .channel(`studio-tracks-${projectId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'audio_files',
+            filter: `project_id=eq.${projectId}`
+          },
+          () => {
+            loadProjectData();
+          }
+        )
+        .subscribe();
+
+      const commentsChannel = supabase
+        .channel(`studio-comments-${projectId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'comments',
+            filter: `project_id=eq.${projectId}`
+          },
+          (payload) => {
+            // Only reload comments from OTHER users (skip own changes - we already have optimistic updates)
+            const commentUserId = (payload.new as any)?.user_id;
+            const isOwnComment = commentUserId === user?.id;
+
+            if (selectedTrack && payload.new && (payload.new as any).audio_file_id === selectedTrack.id && !isOwnComment) {
+              loadTimelineComments(selectedTrack.id);
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        cleanup();
+        tracksChannel.unsubscribe();
+        commentsChannel.unsubscribe();
+      };
+    }
+  }, [projectId, user?.id, selectedTrack?.id]);
 
   // Add focus listener to stop audio when navigating away
   useEffect(() => {
@@ -230,7 +317,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     }
   };
 
-  const loadProjectData = async () => {
+  const loadProjectData = useCallback(async () => {
     try {
       setLoading(true);
 
@@ -244,15 +331,77 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       if (projectError) throw projectError;
       setProject(projectData);
 
-      // Check if current user is a collaborator
-      const { data: collaboratorData } = await supabase
-        .from('project_collaborators')
-        .select('id')
-        .eq('project_id', projectId)
-        .eq('user_id', user?.id)
-        .single();
+      // Determine user permissions
+      const isOwner = projectData.creator_id === user?.id;
 
-      setIsCollaborator(!!collaboratorData);
+      if (isOwner) {
+        // Owner has all permissions
+        setIsCollaborator(true);
+        setUserPermissions({
+          canEdit: true,
+          canDelete: true,
+          canUpload: true,
+          canDownload: true,
+          canComment: true,
+        });
+      } else if (user?.id) {
+        // Check if user is a collaborator
+        const { data: collaboratorData } = await supabase
+          .from('project_collaborators')
+          .select('can_edit, can_delete, can_upload, can_download, can_comment')
+          .eq('project_id', projectId)
+          .eq('user_id', user.id)
+          .eq('invitation_status', 'accepted')
+          .single();
+
+        if (collaboratorData) {
+          // User is a collaborator - use their permissions
+          setIsCollaborator(true);
+          setUserPermissions({
+            canEdit: collaboratorData.can_edit || false,
+            canDelete: collaboratorData.can_delete || false,
+            canUpload: collaboratorData.can_upload || false,
+            canDownload: collaboratorData.can_download || false,
+            canComment: collaboratorData.can_comment || false,
+          });
+        } else if (projectData.is_public) {
+          // User is not a collaborator but project is public - view-only with comments
+          setIsCollaborator(false);
+          setUserPermissions({
+            canEdit: false,
+            canDelete: false,
+            canUpload: false,
+            canDownload: false,
+            canComment: true,
+          });
+        } else {
+          // User is not a collaborator and project is private - deny access
+          Alert.alert(
+            'Access Denied',
+            'This project is private. You need to be invited to view it.',
+            [{ text: 'OK', onPress: () => navigation.goBack() }]
+          );
+          return;
+        }
+      } else if (projectData.is_public) {
+        // Not logged in but project is public
+        setIsCollaborator(false);
+        setUserPermissions({
+          canEdit: false,
+          canDelete: false,
+          canUpload: false,
+          canDownload: false,
+          canComment: true,
+        });
+      } else {
+        // Not logged in and project is private
+        Alert.alert(
+          'Access Denied',
+          'This project is private. You need to be invited to view it.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
+        return;
+      }
 
       // Load audio tracks with uploader info
       const { data: audioData, error: audioError } = await supabase
@@ -279,7 +428,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
         key: file.key || undefined,
         created_at: file.created_at || '',
         project_id: file.project_id || undefined,
-        created_by: file.created_by || undefined,
+        created_by: file.creator_id || undefined,
         uploader_name: file.users?.display_name || file.users?.username || 'Unknown',
         priority: file.priority || 'medium',
         order_index: file.order_index || 0,
@@ -297,9 +446,9 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId, user?.id, navigation]);
 
-  const getStemColor = (stemType: string | null): string => {
+  const getStemColor = useCallback((stemType: string | null): string => {
     const stemColors: { [key: string]: string } = {
       vocals: Colors.vocals,
       drums: Colors.drums,
@@ -312,13 +461,16 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       other: '#FFC107', // Amber
     };
     return stemColors[stemType?.toLowerCase() || 'other'] || Colors.primary;
-  };
+  }, []);
 
   // Check if current user is project owner
   const isProjectOwner = project?.creator_id === user?.id;
 
-  // Check if user can edit/download (owner or collaborator)
-  const canEdit = isProjectOwner || isCollaborator;
+  // Use granular permissions from state
+  const canEdit = userPermissions.canEdit;
+  const canDelete = userPermissions.canDelete;
+  const canUpload = userPermissions.canUpload;
+  const canDownload = userPermissions.canDownload;
 
   // Get visible tracks (filtered and sorted by order_index)
   const visibleTracks = useMemo(() => {
@@ -344,9 +496,8 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
   }, [currentPosition, duration]);
 
   // Move track up (swap with track above)
-  const moveTrackUp = async (trackId: string) => {
+  const moveTrackUp = useCallback(async (trackId: string) => {
     try {
-      const currentVisibleTracks = visibleTracks;
       const currentIndex = visibleTracks.findIndex(t => t.id === trackId);
 
       if (currentIndex <= 0) return; // Already at top
@@ -354,32 +505,35 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       const currentTrack = visibleTracks[currentIndex];
       const aboveTrack = visibleTracks[currentIndex - 1];
 
-      // Swap order_index values
+      // Use visual position as the new order_index (ensures unique values)
+      const newCurrentIndex = currentIndex - 1;
+      const newAboveIndex = currentIndex;
+
+      // Update database with new position-based order_index values
       await supabase
         .from('audio_files')
-        .update({ order_index: aboveTrack.order_index })
+        .update({ order_index: newCurrentIndex })
         .eq('id', currentTrack.id);
 
       await supabase
         .from('audio_files')
-        .update({ order_index: currentTrack.order_index })
+        .update({ order_index: newAboveIndex })
         .eq('id', aboveTrack.id);
 
-      // Update local state
+      // Update local state with new order_index values
       setTracks(prev => prev.map(track => {
-        if (track.id === currentTrack.id) return { ...track, order_index: aboveTrack.order_index };
-        if (track.id === aboveTrack.id) return { ...track, order_index: currentTrack.order_index };
+        if (track.id === currentTrack.id) return { ...track, order_index: newCurrentIndex };
+        if (track.id === aboveTrack.id) return { ...track, order_index: newAboveIndex };
         return track;
       }));
     } catch (error) {
       Alert.alert('Error', 'Failed to move track');
     }
-  };
+  }, [visibleTracks]);
 
   // Move track down (swap with track below)
-  const moveTrackDown = async (trackId: string) => {
+  const moveTrackDown = useCallback(async (trackId: string) => {
     try {
-      const currentVisibleTracks = visibleTracks;
       const currentIndex = visibleTracks.findIndex(t => t.id === trackId);
 
       if (currentIndex >= visibleTracks.length - 1) return; // Already at bottom
@@ -387,30 +541,34 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       const currentTrack = visibleTracks[currentIndex];
       const belowTrack = visibleTracks[currentIndex + 1];
 
-      // Swap order_index values
+      // Use visual position as the new order_index (ensures unique values)
+      const newCurrentIndex = currentIndex + 1;
+      const newBelowIndex = currentIndex;
+
+      // Update database with new position-based order_index values
       await supabase
         .from('audio_files')
-        .update({ order_index: belowTrack.order_index })
+        .update({ order_index: newCurrentIndex })
         .eq('id', currentTrack.id);
 
       await supabase
         .from('audio_files')
-        .update({ order_index: currentTrack.order_index })
+        .update({ order_index: newBelowIndex })
         .eq('id', belowTrack.id);
 
-      // Update local state
+      // Update local state with new order_index values
       setTracks(prev => prev.map(track => {
-        if (track.id === currentTrack.id) return { ...track, order_index: belowTrack.order_index };
-        if (track.id === belowTrack.id) return { ...track, order_index: currentTrack.order_index };
+        if (track.id === currentTrack.id) return { ...track, order_index: newCurrentIndex };
+        if (track.id === belowTrack.id) return { ...track, order_index: newBelowIndex };
         return track;
       }));
     } catch (error) {
       Alert.alert('Error', 'Failed to move track');
     }
-  };
+  }, [visibleTracks]);
 
   // Toggle track hidden status
-  const toggleTrackHidden = async (trackId: string) => {
+  const toggleTrackHidden = useCallback(async (trackId: string) => {
     try {
       const track = tracks.find(t => t.id === trackId);
       if (!track) return;
@@ -437,11 +595,50 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     } catch (error) {
       Alert.alert('Error', 'Failed to update track visibility');
     }
-  };
+  }, [tracks, isProjectOwner, user?.id]);
 
+  // Use useCallback with refs to avoid stale closures that cause freezing
+  const onPlaybackStatusUpdate = useCallback((status: any) => {
+    if (status.isLoaded) {
+      setCurrentPosition(status.positionMillis || 0);
+      setDuration((prevDuration) => status.durationMillis || prevDuration);
+      setIsPlaying(status.isPlaying || false);
 
-  const selectTrack = async (track: AudioTrack) => {
+      // Use refs to get latest values (avoid stale closures)
+      const track = selectedTrackRef.current;
+      const currentSound = soundRef.current;
+
+      // If track is explicitly trimmed, stop playback at trim end boundary
+      // Only apply trim logic if is_trimmed is explicitly true and trim_end_ms is a valid number
+      if (track?.is_trimmed === true && typeof track?.trim_end_ms === 'number' && track.trim_end_ms > 0) {
+        if (status.positionMillis >= track.trim_end_ms && status.isPlaying) {
+          currentSound?.pauseAsync();
+          setIsPlaying(false);
+          // Reset to trim start
+          const trimStart = typeof track.trim_start_ms === 'number' ? track.trim_start_ms : 0;
+          currentSound?.setPositionAsync(trimStart);
+          setCurrentPosition(trimStart);
+        }
+      }
+
+      if (status.didJustFinish) {
+        // Just stop playback - don't reset position
+        // Position will reset when user presses play (handled in togglePlayback)
+        setIsPlaying(false);
+      }
+    }
+  }, []);
+
+  const selectTrack = useCallback(async (track: AudioTrack) => {
     try {
+      // Check if we're selecting the same track
+      const isSameTrack = selectedTrack?.id === track.id;
+
+      // If same track is tapped, do nothing (use play/pause button to control playback)
+      if (isSameTrack) {
+        return;
+      }
+
       // Save current track's position before switching
       if (selectedTrack && sound) {
         try {
@@ -482,16 +679,17 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
         setPlayerState('minimized');
       }
 
-      // Load the new track and restore position
-      await loadTrack(track, savedPosition);
+      // Load the new track (without auto-play - user must press play button)
+      await loadTrack(track, savedPosition, false);
 
       // Load timeline comments for this track
       loadTimelineComments(track.id);
     } catch (error) {
+      console.error('Error selecting track:', error);
     }
-  };
+  }, [selectedTrack, sound, trackPositions, playerState, loadTimelineComments, loadTrack]);
 
-  const loadTrack = async (track: AudioTrack, startPosition: number = 0) => {
+  const loadTrack = useCallback(async (track: AudioTrack, startPosition: number = 0, autoPlay: boolean = false) => {
     try {
       setIsLoading(true);
 
@@ -510,7 +708,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       const { sound: newSound } = await Audio.Sound.createAsync(
         { uri: data.signedUrl },
         {
-          shouldPlay: false,
+          shouldPlay: autoPlay,
           volume: track.volume,
           isLooping: false,
           positionMillis: effectiveStartPosition,
@@ -519,40 +717,23 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       );
 
       setSound(newSound);
-    } catch (error) {
+
+      // Update playing state if auto-playing
+      if (autoPlay) {
+        setIsPlaying(true);
+      }
+    } catch (error: any) {
+      console.error('Error loading track:', error);
       // Use fallback duration if loading fails
       setDuration(track.duration_ms || 0);
+      Alert.alert(
+        'Audio Load Error',
+        `Could not load track: ${error.message || 'Unknown error'}. You can still view track info.`
+      );
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const onPlaybackStatusUpdate = (status: any) => {
-    if (status.isLoaded) {
-      setCurrentPosition(status.positionMillis || 0);
-      setDuration(status.durationMillis || duration);
-      setIsPlaying(status.isPlaying || false);
-
-      // If track is trimmed, stop playback at trim end boundary
-      if (selectedTrack?.is_trimmed && selectedTrack?.trim_end_ms) {
-        if (status.positionMillis >= selectedTrack.trim_end_ms && status.isPlaying) {
-          sound?.pauseAsync();
-          setIsPlaying(false);
-          // Reset to trim start
-          if (selectedTrack.trim_start_ms) {
-            sound?.setPositionAsync(selectedTrack.trim_start_ms);
-          }
-        }
-      }
-
-      if (status.didJustFinish) {
-        setIsPlaying(false);
-        // If trimmed, reset to trim start, otherwise reset to 0
-        const resetPosition = selectedTrack?.trim_start_ms || 0;
-        setCurrentPosition(resetPosition);
-      }
-    }
-  };
+  }, [onPlaybackStatusUpdate]);
 
   const togglePlayback = useCallback(async () => {
     if (!selectedTrack) {
@@ -567,22 +748,36 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
           if (isPlaying) {
             await sound.pauseAsync();
           } else {
+            // Check if we're at or near the end of the track - if so, restart from beginning
+            const trackDuration = status.durationMillis || 0;
+            const currentPos = status.positionMillis || 0;
+            const startPosition = selectedTrack.trim_start_ms || 0;
+
+            // Consider "at the end" if within 500ms of the end
+            const isAtEnd = trackDuration > 0 && (trackDuration - currentPos) < 500;
+
+            if (isAtEnd) {
+              // Reset to beginning (or trim start) before playing
+              await sound.setPositionAsync(startPosition);
+              setCurrentPosition(startPosition);
+            }
+
             await sound.playAsync();
           }
         } else {
-          // Sound exists but not loaded, reload it
-          await loadTrack(selectedTrack);
+          // Sound exists but not loaded, reload and auto-play
+          await loadTrack(selectedTrack, 0, true);
         }
       } else {
-        // If no sound loaded, try loading the selected track first
-        await loadTrack(selectedTrack);
+        // If no sound loaded, load and auto-play
+        await loadTrack(selectedTrack, 0, true);
       }
     } catch (error) {
       Alert.alert('Playback Error', 'Failed to play audio');
     }
   }, [selectedTrack, sound, isPlaying, loadTrack]);
 
-  const stopPlayback = async () => {
+  const stopPlayback = useCallback(async () => {
     try {
       if (sound) {
         await sound.stopAsync();
@@ -590,7 +785,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       }
     } catch (error) {
     }
-  };
+  }, [sound]);
 
   const seekTo = useCallback(async (positionMs: number) => {
     try {
@@ -647,20 +842,20 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     })
   ).current;
 
-  const formatTime = (ms: number): string => {
+  const formatTime = useCallback((ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000);
     const minutes = Math.floor(totalSeconds / 60);
     const seconds = totalSeconds % 60;
     return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-  };
+  }, []);
 
-  const formatDate = (dateString: string) => {
+  const formatDate = useCallback((dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
       year: 'numeric'
     });
-  };
+  }, []);
 
 
   // Load timeline comments for a specific audio file
@@ -700,12 +895,16 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     }
   }, []);
 
-  // Add a timeline comment at current timestamp
+  // Add a timeline comment at current timestamp - SIMPLIFIED to prevent freezing
   const addTimelineComment = useCallback(async (content: string) => {
     if (!selectedTrack || !content.trim()) return;
 
+    // Close UI immediately
+    setShowTimelineCommentModal(false);
+    setNewComment('');
+
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('comments')
         .insert({
           project_id: projectId,
@@ -713,49 +912,16 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
           user_id: user?.id,
           content: content.trim(),
           timestamp_ms: commentTimestamp,
-        })
-        .select(`
-          id,
-          content,
-          timestamp_ms,
-          created_at,
-          user_id,
-          users!comments_user_id_fkey(username, display_name)
-        `)
-        .single();
+        });
 
       if (error) throw error;
 
-      // Update project's updated_at timestamp
-      if (project) {
-        await supabase
-          .from('projects')
-          .update({ updated_at: new Date().toISOString() })
-          .eq('id', project.id);
-      }
-
-      // Add new comment to local state instead of reloading
-      if (data) {
-        const newComment: Comment = {
-          id: data.id || '',
-          content: data.content || '',
-          timestamp_ms: data.timestamp_ms || 0,
-          created_at: data.created_at || '',
-          user_id: data.user_id || '',
-          users: {
-            username: data.users?.username || '',
-            display_name: data.users?.display_name || ''
-          }
-        };
-        setTimelineComments(prev => [...prev, newComment].sort((a, b) => a.timestamp_ms - b.timestamp_ms));
-      }
-
-      setShowTimelineCommentModal(false);
-      setNewComment('');
+      // Reload comments from database
+      loadTimelineComments(selectedTrack.id);
     } catch (error) {
       Alert.alert('Error', 'Failed to add comment');
     }
-  }, [selectedTrack, projectId, user, commentTimestamp, project]);
+  }, [selectedTrack, projectId, user, commentTimestamp, loadTimelineComments]);
 
   // View existing comment (don't seek, just highlight and show modal)
   const handleCommentTap = useCallback((comment: Comment) => {
@@ -857,6 +1023,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
 
   // Open timeline comment modal at current position (create new comment)
   const openTimelineCommentModal = useCallback(() => {
+    setNewComment(''); // Clear any previous comment text
     setCommentTimestamp(currentPosition);
     setShowTimelineCommentModal(true);
   }, [currentPosition]);
@@ -871,12 +1038,17 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     setShowEditModal(true);
   }, [selectedTrack]);
 
+  // Ref to track which audio file is being analyzed (survives state changes)
+  const detectingTrackIdRef = useRef<string | null>(null);
+
   // Detect BPM for selected track
   const handleDetectBPM = useCallback(async () => {
     if (!selectedTrack) return;
 
     try {
       setIsDetectingBPM(true);
+      // Store the track ID so we can reference it when detection completes
+      detectingTrackIdRef.current = selectedTrack.id;
 
       // Get audio URL (offline-first)
       const { url, method } = await getAudioURL(selectedTrack.id, selectedTrack.file_path);
@@ -887,24 +1059,34 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     } catch (error) {
       Alert.alert('Error', 'Failed to detect BPM');
       setIsDetectingBPM(false);
+      detectingTrackIdRef.current = null;
     }
   }, [selectedTrack]);
 
   // Handle BPM detection completion
   const handleBPMDetected = useCallback(async (bpm: number) => {
-    if (!selectedTrack) return;
+    const trackId = detectingTrackIdRef.current;
+
+    // Always reset detecting state first
+    setIsDetectingBPM(false);
+    detectingTrackIdRef.current = null;
+
+    if (!trackId) {
+      console.warn('BPM detected but no track ID stored');
+      return;
+    }
 
     try {
       setDetectedBPM(bpm);
 
-      // Update database
+      // Update database using the stored track ID
       const { error } = await supabase
         .from('audio_files')
         .update({
           bpm,
           updated_at: new Date().toISOString()
         })
-        .eq('id', selectedTrack.id);
+        .eq('id', trackId);
 
       if (error) throw error;
 
@@ -919,25 +1101,26 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
       // Update local tracks array
       setTracks(prevTracks =>
         prevTracks.map(track =>
-          track.id === selectedTrack.id ? { ...track, bpm } : track
+          track.id === trackId ? { ...track, bpm } : track
         )
       );
 
-      // Update selected track
-      setSelectedTrack(prev => prev ? { ...prev, bpm } : prev);
+      // Update selected track if it's still the same one
+      setSelectedTrack(prev => prev?.id === trackId ? { ...prev, bpm } : prev);
 
       Alert.alert('BPM Detected', `${bpm} BPM`);
     } catch (error) {
+      console.error('Error saving BPM:', error);
       Alert.alert('Error', 'BPM detected but failed to save');
-    } finally {
-      setIsDetectingBPM(false);
     }
-  }, [selectedTrack, project]);
+  }, [project]);
 
   // Handle BPM detection error
   const handleBPMError = useCallback((error: string) => {
-    Alert.alert('Error', 'Failed to detect BPM: ' + error);
+    console.error('BPM detection error:', error);
     setIsDetectingBPM(false);
+    detectingTrackIdRef.current = null;
+    Alert.alert('Error', 'Failed to detect BPM: ' + error);
   }, []);
 
   // Handle manual BPM input
@@ -1075,7 +1258,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
 
         // Debug: Check if user is a collaborator
         const { data: collabCheck } = await supabase
-          .from('collaborators')
+          .from('project_collaborators')
           .select('*')
           .eq('project_id', selectedTrack.project_id)
           .eq('user_id', user.id);
@@ -1213,21 +1396,11 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
     if (!selectedTrack) return;
 
     try {
-      // Check if user is authorized to download (owner or collaborator)
-      const { data: collaboratorCheck } = await supabase
-        .from('project_collaborators')
-        .select('id')
-        .eq('project_id', projectId)
-        .eq('user_id', user?.id)
-        .single();
-
-      const isCollaborator = !!collaboratorCheck;
-      const isOwner = project?.creator_id === user?.id;
-
-      if (!isOwner && !isCollaborator) {
+      // Check if user has download permission
+      if (!canDownload) {
         Alert.alert(
           'Access Denied',
-          'Only project owners and collaborators can download audio files.'
+          'You do not have permission to download audio files from this project.'
         );
         return;
       }
@@ -1333,16 +1506,21 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
         onError={handleBPMError}
       />
 
-      <Header
+      <CompactHeader
         title={project?.title || projectTitle}
         subtitle="Project Studio"
-        variant="compact"
-        showBack
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
+
+      {/* Public Viewer Hint */}
+      {!isCollaborator && project?.is_public && (
+        <View style={styles.publicViewerHint}>
+          <Ionicons name="eye-outline" size={16} color={Colors.textSecondary} />
+          <Text style={styles.publicViewerHintText}>
+            You're viewing a public project. Play and listen only.
+          </Text>
+        </View>
+      )}
 
       {/* Split Action Bar - Owner Only */}
       {activeTab === 'track' && isProjectOwner && (
@@ -1371,21 +1549,25 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
                 {isOrganizeMode ? 'Done' : 'Organize'}
               </Text>
             </TouchableOpacity>
-            <View style={styles.splitActionDivider} />
-            <TouchableOpacity
-              style={styles.splitActionRight}
-              onPress={() => navigation.navigate('AudioUpload', { projectId })}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name="add-circle-outline"
-                size={20}
-                color={Colors.primary}
-              />
-              <Text style={styles.splitActionText}>
-                Add Track
-              </Text>
-            </TouchableOpacity>
+            {canUpload && (
+              <>
+                <View style={styles.splitActionDivider} />
+                <TouchableOpacity
+                  style={styles.splitActionRight}
+                  onPress={() => navigation.navigate('AudioUpload', { projectId })}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name="add-circle-outline"
+                    size={20}
+                    color={Colors.primary}
+                  />
+                  <Text style={styles.splitActionText}>
+                    Add Track
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         </View>
       )}
@@ -1396,18 +1578,23 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
           style={styles.mainTracksList}
           contentContainerStyle={styles.tracksListContent}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
           {tracks.length === 0 ? (
             <View style={styles.emptyTracksState}>
               <Ionicons name="musical-notes-outline" size={48} color={Colors.textSecondary} />
               <Text style={styles.emptyStateText}>No tracks yet</Text>
-              <Text style={styles.emptyStateSubtext}>Add audio files to get started</Text>
-              <TouchableOpacity
-                style={styles.addTrackButton}
-                onPress={() => navigation.navigate('AudioUpload', { projectId })}
-              >
-                <Text style={styles.addTrackButtonText}>Add Track</Text>
-              </TouchableOpacity>
+              <Text style={styles.emptyStateSubtext}>
+                {canUpload ? 'Add audio files to get started' : 'No audio files have been added to this project'}
+              </Text>
+              {canUpload && (
+                <TouchableOpacity
+                  style={styles.addTrackButton}
+                  onPress={() => navigation.navigate('AudioUpload', { projectId })}
+                >
+                  <Text style={styles.addTrackButtonText}>Add Track</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <>
@@ -1451,6 +1638,17 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
                   </View>
                 </View>
 
+                {/* Playing Indicator - Top Right */}
+                {!isOrganizeMode && selectedTrack?.id === track.id && (
+                  <View style={styles.playingIndicator}>
+                    <Ionicons
+                      name={isPlaying ? "volume-high" : "pause"}
+                      size={14}
+                      color={Colors.primary}
+                    />
+                  </View>
+                )}
+
                 {/* Organize Mode Controls */}
                 {isOrganizeMode && isProjectOwner && (
                   <View style={styles.organizeControls}>
@@ -1487,17 +1685,6 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
                     </TouchableOpacity>
                   </View>
                 )}
-
-                {/* Playing Indicator */}
-                {!isOrganizeMode && selectedTrack?.id === track.id && (
-                  <View style={styles.playingIndicator}>
-                    <Ionicons
-                      name={isPlaying ? "volume-high" : "play"}
-                      size={14}
-                      color={Colors.primary}
-                    />
-                  </View>
-                )}
               </TouchableOpacity>
               ))}
 
@@ -1524,8 +1711,8 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
         </ScrollView>
       )}
 
-      {/* Chat Tab Content - iMessage-style Project Chat */}
-      {activeTab === 'chat' && user && (
+      {/* Chat Tab Content - iMessage-style Project Chat - Only for collaborators */}
+      {activeTab === 'chat' && user && isCollaborator && (
         <ProjectChat
           projectId={projectId}
           currentUserId={user.id}
@@ -1542,7 +1729,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
             onPress={() => setPlayerState('maximized')}
             activeOpacity={0.6}
           >
-            <View style={styles.minimizedHandleBar} />
+            <Ionicons name="chevron-up" size={16} color="rgba(255, 255, 255, 0.25)" />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -1629,10 +1816,21 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
           <View style={styles.minimizeHandleContainer}>
             <TouchableOpacity
               style={styles.minimizeHandle}
-              onPress={() => setPlayerState('minimized')}
+              onPress={() => {
+                // Dismiss keyboard first to prevent touch issues after modal closes
+                Keyboard.dismiss();
+                // Reset all modal/overlay states when minimizing
+                setShowTimelineCommentModal(false);
+                setNewComment('');
+                setShowViewCommentModal(false);
+                setSelectedComment(null);
+                setEditingComment(false);
+                setShowEditModal(false);
+                setPlayerState('minimized');
+              }}
               activeOpacity={0.6}
             >
-              <View style={styles.minimizeBar} />
+              <Ionicons name="chevron-down" size={18} color="rgba(255, 255, 255, 0.25)" />
             </TouchableOpacity>
           </View>
 
@@ -1751,7 +1949,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
               onPress={() => skipTime(-10)}
               disabled={!selectedTrack}
             >
-              <Ionicons name="play-back" size={16} color={selectedTrack ? Colors.text : Colors.textSecondary} />
+              <Ionicons name="play-back" size={28} color={selectedTrack ? Colors.text : Colors.textSecondary} />
               <Text style={[styles.seekButtonText, { color: selectedTrack ? Colors.text : Colors.textSecondary }]}>10</Text>
             </TouchableOpacity>
 
@@ -1763,7 +1961,7 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
               {isLoading ? (
                 <ActivityIndicator size="small" color={Colors.text} />
               ) : (
-                <Ionicons name={isPlaying ? 'pause' : 'play'} size={20} color={Colors.text} />
+                <Ionicons name={isPlaying ? 'pause' : 'play'} size={36} color={Colors.text} />
               )}
             </TouchableOpacity>
 
@@ -1772,22 +1970,62 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
               onPress={() => skipTime(10)}
               disabled={!selectedTrack}
             >
-              <Ionicons name="play-forward" size={16} color={selectedTrack ? Colors.text : Colors.textSecondary} />
+              <Ionicons name="play-forward" size={28} color={selectedTrack ? Colors.text : Colors.textSecondary} />
               <Text style={[styles.seekButtonText, { color: selectedTrack ? Colors.text : Colors.textSecondary }]}>10</Text>
             </TouchableOpacity>
           </View>
 
           {/* Comments Section - Modern Chat Style */}
           <View style={styles.commentsSection}>
-            {/* Add Comment Button */}
-            <TouchableOpacity
-              style={styles.addCommentButtonNew}
-              onPress={openTimelineCommentModal}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="add-circle" size={20} color={Colors.primary} />
-              <Text style={styles.addCommentButtonTextNew}>Comment</Text>
-            </TouchableOpacity>
+            {/* Inline Comment Input - replaces modal for better UX */}
+            {showTimelineCommentModal ? (
+              <View style={styles.inlineCommentContainer}>
+                <Text style={styles.inlineCommentTimestamp}>
+                  At {formatTime(commentTimestamp)}
+                </Text>
+                <View style={styles.inlineCommentInputRow}>
+                  <TextInput
+                    style={styles.inlineCommentInput}
+                    placeholder="Add your comment..."
+                    placeholderTextColor={Colors.textSecondary}
+                    value={newComment}
+                    onChangeText={setNewComment}
+                    multiline
+                    autoFocus={false}
+                  />
+                  <View style={styles.inlineCommentButtons}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setShowTimelineCommentModal(false);
+                        setNewComment('');
+                      }}
+                      style={styles.inlineCommentCancelButton}
+                    >
+                      <Ionicons name="close" size={20} color={Colors.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => addTimelineComment(newComment)}
+                      disabled={!newComment.trim()}
+                      style={[
+                        styles.inlineCommentSaveButton,
+                        !newComment.trim() && styles.inlineCommentSaveButtonDisabled
+                      ]}
+                    >
+                      <Ionicons name="send" size={18} color={newComment.trim() ? Colors.text : Colors.textSecondary} />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.addCommentButtonNew}
+                onPress={openTimelineCommentModal}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="add-circle" size={20} color={Colors.primary} />
+                <Text style={styles.addCommentButtonTextNew}>Comment</Text>
+              </TouchableOpacity>
+            )}
 
             {/* Collapsible Comments List */}
             {timelineComments.length > 0 && (
@@ -2016,8 +2254,8 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
                   </View>
                   )}
 
-                  {/* Download Button - Only for owners and collaborators */}
-                  {canEdit && (
+                  {/* Download Button - Only for users with download permission */}
+                  {canDownload && (
                     <TouchableOpacity
                       style={styles.downloadButton}
                       onPress={downloadAudioFile}
@@ -2027,8 +2265,8 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
                     </TouchableOpacity>
                   )}
 
-                  {/* Delete Button - Only for owners and collaborators */}
-                  {canEdit && (
+                  {/* Delete Button - Only for users with delete permission */}
+                  {canDelete && (
                     <TouchableOpacity
                       style={styles.deleteButton}
                       onPress={() => {
@@ -2174,175 +2412,30 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
           </Text>
         </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'chat' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('chat')}
-        >
-          <Ionicons
-            name="chatbubbles"
-            size={20}
-            color={activeTab === 'chat' ? Colors.primary : Colors.textSecondary}
-          />
-          <Text style={[
-            styles.tabButtonText,
-            activeTab === 'chat' && styles.tabButtonTextActive
-          ]}>
-            Chat
-          </Text>
-        </TouchableOpacity>
+        {/* Chat Tab - Only visible to collaborators (Owner, Admin, Editor) */}
+        {isCollaborator && (
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'chat' && styles.tabButtonActive]}
+            onPress={() => setActiveTab('chat')}
+          >
+            <Ionicons
+              name="chatbubbles"
+              size={20}
+              color={activeTab === 'chat' ? Colors.primary : Colors.textSecondary}
+            />
+            <Text style={[
+              styles.tabButtonText,
+              activeTab === 'chat' && styles.tabButtonTextActive
+            ]}>
+              Chat
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      {/* Timeline Comment Modal - Create new comment */}
+      {/* Edit Audio Modal - Only show when NOT in maximized state (overlay handles it there) */}
       <Modal
-        visible={showTimelineCommentModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-      >
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => {
-              setShowTimelineCommentModal(false);
-              setNewComment('');
-            }}>
-              <Text style={styles.modalCancel}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>Add Comment</Text>
-            <TouchableOpacity
-              onPress={() => addTimelineComment(newComment)}
-              disabled={!newComment.trim()}
-            >
-              <Text style={[
-                styles.modalDone,
-                !newComment.trim() && styles.modalDoneDisabled
-              ]}>
-                Save
-              </Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.modalContent}>
-            <Text style={styles.timestampText}>
-              At {formatTime(commentTimestamp)}
-            </Text>
-            <TextInput
-              style={styles.messageInput}
-              placeholder="Add your comment..."
-              placeholderTextColor={Colors.textSecondary}
-              value={newComment}
-              onChangeText={setNewComment}
-              multiline
-              autoFocus
-            />
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* View Comment Modal - View/Edit/Delete existing comment */}
-      <Modal
-        visible={showViewCommentModal}
-        animationType="slide"
-        presentationStyle="pageSheet"
-      >
-        <SafeAreaView style={styles.modalContainer}>
-          <View style={styles.modalHeader}>
-            <TouchableOpacity onPress={() => {
-              setShowViewCommentModal(false);
-              setSelectedComment(null);
-              setEditingComment(false);
-            }}>
-              <Text style={styles.modalCancel}>Close</Text>
-            </TouchableOpacity>
-            <Text style={styles.modalTitle}>Comment</Text>
-            {editingComment && (
-              <TouchableOpacity
-                onPress={updateComment}
-                disabled={!editCommentText.trim()}
-              >
-                <Text style={[
-                  styles.modalDone,
-                  !editCommentText.trim() && styles.modalDoneDisabled
-                ]}>
-                  Save
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-          <View style={styles.modalContent}>
-            {selectedComment && (
-              <>
-                <Text style={styles.timestampText}>
-                  At {formatTime(selectedComment.timestamp_ms || 0)}
-                </Text>
-                <Text style={styles.commentAuthorText}>
-                  By {selectedComment.users.display_name || selectedComment.users.username}
-                </Text>
-
-                {editingComment ? (
-                  <TextInput
-                    style={styles.messageInput}
-                    placeholder="Edit comment..."
-                    placeholderTextColor={Colors.textSecondary}
-                    value={editCommentText}
-                    onChangeText={setEditCommentText}
-                    multiline
-                    autoFocus
-                  />
-                ) : (
-                  <View style={styles.commentContentBox}>
-                    <Text style={styles.commentContentText}>{selectedComment.content}</Text>
-                  </View>
-                )}
-
-                <View style={styles.commentActions}>
-                  <TouchableOpacity
-                    style={styles.commentActionButton}
-                    onPress={playFromComment}
-                  >
-                    <Ionicons name="play-circle-outline" size={20} color={Colors.primary} />
-                    <Text style={styles.commentActionText}>Play from here</Text>
-                  </TouchableOpacity>
-
-                  {selectedComment.user_id === user?.id && !editingComment && (
-                    <>
-                      <TouchableOpacity
-                        style={styles.commentActionButton}
-                        onPress={() => setEditingComment(true)}
-                      >
-                        <Ionicons name="create-outline" size={20} color={Colors.primary} />
-                        <Text style={styles.commentActionText}>Edit</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.commentActionButton, styles.deleteActionButton]}
-                        onPress={() => {
-                          Alert.alert(
-                            'Delete Comment',
-                            'Are you sure you want to delete this comment?',
-                            [
-                              { text: 'Cancel', style: 'cancel' },
-                              {
-                                text: 'Delete',
-                                style: 'destructive',
-                                onPress: deleteComment
-                              }
-                            ]
-                          );
-                        }}
-                      >
-                        <Ionicons name="trash-outline" size={20} color="#EF4444" />
-                        <Text style={[styles.commentActionText, { color: '#EF4444' }]}>Delete</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
-                </View>
-              </>
-            )}
-          </View>
-        </SafeAreaView>
-      </Modal>
-
-      {/* Edit Audio Modal */}
-      <Modal
-        visible={showEditModal}
+        visible={showEditModal && playerState !== 'maximized'}
         animationType="slide"
         presentationStyle="overFullScreen"
         transparent={false}
@@ -2513,8 +2606,8 @@ export default function ProjectStudioScreen({ route, navigation }: any) {
             </View>
             )}
 
-            {/* Download Button - Only for owners and collaborators */}
-            {canEdit && (
+            {/* Download Button - Only for users with download permission */}
+            {canDownload && (
               <TouchableOpacity
                 style={styles.downloadButton}
                 onPress={downloadAudioFile}
@@ -2581,6 +2674,24 @@ const styles = StyleSheet.create({
     marginTop: Spacing.md,
   },
 
+  // Public Viewer Hint
+  publicViewerHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(147, 51, 234, 0.1)',
+    paddingVertical: Spacing.sm,
+    paddingHorizontal: Spacing.md,
+    marginHorizontal: Spacing.md,
+    marginTop: Spacing.sm,
+    borderRadius: BorderRadius.md,
+    gap: Spacing.sm,
+  },
+  publicViewerHintText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    flex: 1,
+  },
+
   // Main Content - Scrollable tracks list
   mainTracksList: {
     flex: 1,
@@ -2597,23 +2708,24 @@ const styles = StyleSheet.create({
   },
   minimizedHandle: {
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    paddingTop: Spacing.md,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.xxs,
   },
-  minimizedHandleBar: {
-    width: scale(40),
+  handlePill: {
+    width: scale(36),
     height: scale(4),
     backgroundColor: 'rgba(255, 255, 255, 0.3)',
     borderRadius: scale(2),
   },
   minimizedContentWrapper: {
-    paddingBottom: Spacing.sm,
+    paddingBottom: Spacing.xs,
   },
   minimizedContent: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: Spacing.lg,
-    paddingVertical: Spacing.md,
+    paddingTop: Spacing.xxs,
+    paddingBottom: Spacing.sm,
     gap: Spacing.md,
   },
   minimizedColorBar: {
@@ -2685,12 +2797,12 @@ const styles = StyleSheet.create({
   },
   minimizeHandleContainer: {
     alignItems: 'center',
-    paddingVertical: Spacing.sm,
-    marginBottom: Spacing.md,
+    paddingTop: Spacing.xs,
+    paddingBottom: Spacing.xxs,
     marginTop: -Spacing.md,
   },
   minimizeHandle: {
-    paddingVertical: scale(8),
+    paddingVertical: scale(4),
     paddingHorizontal: scale(20),
   },
   minimizeBar: {
@@ -2820,6 +2932,61 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     fontSize: scale(16),
     letterSpacing: scale(0.3),
+  },
+  // Inline comment input styles (no modal needed)
+  inlineCommentContainer: {
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+    padding: scale(12),
+  },
+  inlineCommentTimestamp: {
+    ...Typography.caption,
+    color: Colors.primary,
+    fontWeight: '600',
+    marginBottom: scale(8),
+  },
+  inlineCommentInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: scale(8),
+  },
+  inlineCommentInput: {
+    flex: 1,
+    ...Typography.body,
+    color: Colors.text,
+    backgroundColor: Colors.surface,
+    borderRadius: scale(8),
+    paddingHorizontal: scale(12),
+    paddingVertical: scale(10),
+    minHeight: scale(40),
+    maxHeight: scale(100),
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  inlineCommentButtons: {
+    flexDirection: 'row',
+    gap: scale(4),
+  },
+  inlineCommentCancelButton: {
+    width: scale(36),
+    height: scale(36),
+    borderRadius: scale(18),
+    backgroundColor: Colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inlineCommentSaveButton: {
+    width: scale(36),
+    height: scale(36),
+    borderRadius: scale(18),
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  inlineCommentSaveButtonDisabled: {
+    backgroundColor: Colors.surface,
   },
   commentsCollapsibleContainer: {
     marginTop: scale(16),
@@ -3028,10 +3195,10 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.md,
   },
   seekButton: {
-    width: scale(48),
-    height: scale(48),
-    borderRadius: scale(24),
-    backgroundColor: 'transparent',
+    width: scale(64),
+    height: scale(64),
+    borderRadius: scale(32),
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
@@ -3039,9 +3206,9 @@ const styles = StyleSheet.create({
   seekButtonText: {
     ...Typography.tiny,
     position: 'absolute',
-    bottom: scale(2),
+    bottom: scale(8),
     fontWeight: '700',
-    fontSize: scale(9),
+    fontSize: scale(11),
     color: Colors.textSecondary,
   },
   transportButton: {
@@ -3053,9 +3220,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   playButton: {
-    width: scale(56),
-    height: scale(56),
-    borderRadius: scale(28),
+    width: scale(72),
+    height: scale(72),
+    borderRadius: scale(36),
     backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
@@ -3196,9 +3363,13 @@ const styles = StyleSheet.create({
     letterSpacing: scale(0.3),
   },
   playingIndicator: {
-    marginLeft: Spacing.md,
+    position: 'absolute',
+    top: Spacing.sm,
+    right: Spacing.sm,
     width: scale(24),
     height: scale(24),
+    borderRadius: scale(12),
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -3598,7 +3769,7 @@ const styles = StyleSheet.create({
   },
   manualBPMInput: {
     flex: 1,
-    backgroundColor: Colors.inputBackground,
+    backgroundColor: Colors.surface,
     borderWidth: 1,
     borderColor: Colors.border,
     borderRadius: BorderRadius.md,

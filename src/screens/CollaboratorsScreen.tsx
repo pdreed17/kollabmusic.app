@@ -4,17 +4,17 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   FlatList,
   Alert,
   ActivityIndicator,
   Image,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 interface Collaborator {
   id: string
@@ -66,7 +66,7 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
 
       // Load collaborators
       const { data: collabData, error: collabError } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select(`
           id,
           user_id,
@@ -111,7 +111,8 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
 
         setCollaborators(enrichedCollaborators)
       }
-      console.error('Error loading collaborators:', 'Error')
+    } catch (error) {
+      console.error('Error loading collaborators:', error)
       Alert.alert('Error', 'Failed to load collaborators')
     } finally {
       setLoading(false)
@@ -119,8 +120,13 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
   }
 
   const handleRemoveCollaborator = (collaborator: Collaborator) => {
+    if (!isOwner) {
+      Alert.alert('Permission Denied', 'Only the project owner can remove kollaborators')
+      return
+    }
+
     Alert.alert(
-      'Remove Collaborator',
+      'Remove Kollaborator',
       `Are you sure you want to remove ${collaborator.user.display_name || collaborator.user.username} from this project?`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -130,14 +136,14 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
           onPress: async () => {
             try {
               const { error } = await supabase
-                .from('collaborators')
+                .from('project_collaborators')
                 .delete()
                 .eq('id', collaborator.id)
 
               if (error) throw error
 
               setCollaborators(prev => prev.filter(c => c.id !== collaborator.id))
-              Alert.alert('Success', 'Collaborator removed')
+              Alert.alert('Success', 'Kollaborator removed')
             } catch (error) {
               console.error('Error removing collaborator:', error)
               Alert.alert('Error', 'Failed to remove collaborator')
@@ -171,6 +177,11 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
   }
 
   const updateRole = async (collaboratorId: string, newRole: string) => {
+    if (!isOwner) {
+      Alert.alert('Permission Denied', 'Only the project owner can change kollaborator roles')
+      return
+    }
+
     try {
       const permissions = {
         admin: {
@@ -200,7 +211,7 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
       }
 
       const { error } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .update({
           role: newRole,
           ...permissions[newRole as keyof typeof permissions]
@@ -240,12 +251,25 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
     }
   }
 
+  const handleViewProfile = (collaborator: Collaborator) => {
+    // If it's the current user, navigate to their own profile
+    if (collaborator.user_id === user?.id) {
+      navigation.navigate('Profile')
+    } else {
+      navigation.navigate('UserProfile', { userId: collaborator.user_id })
+    }
+  }
+
   const renderCollaborator = ({ item }: { item: Collaborator }) => {
     const isPending = item.invitation_status === 'pending'
     const isAccepted = item.invitation_status === 'accepted'
 
     return (
-      <View style={styles.collaboratorCard}>
+      <TouchableOpacity
+        style={styles.collaboratorCard}
+        onPress={() => handleViewProfile(item)}
+        activeOpacity={0.7}
+      >
         <View style={styles.collaboratorMain}>
           {/* Avatar */}
           {item.user.avatar_url ? (
@@ -306,13 +330,19 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
             <View style={styles.actions}>
               <TouchableOpacity
                 style={styles.actionButton}
-                onPress={() => handleChangeRole(item)}
+                onPress={(e) => {
+                  e.stopPropagation()
+                  handleChangeRole(item)
+                }}
               >
                 <Ionicons name="swap-horizontal" size={20} color={Colors.primary} />
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.actionButton}
-                onPress={() => handleRemoveCollaborator(item)}
+                onPress={(e) => {
+                  e.stopPropagation()
+                  handleRemoveCollaborator(item)
+                }}
               >
                 <Ionicons name="close-circle" size={20} color={Colors.error} />
               </TouchableOpacity>
@@ -333,17 +363,20 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
             )}
           </View>
         )}
-      </View>
+
+        {/* Tap hint */}
+        <View style={styles.tapHint}>
+          <Ionicons name="chevron-forward" size={16} color={Colors.textTertiary} />
+        </View>
+      </TouchableOpacity>
     )
   }
 
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header
-          title="Collaborators"
-          variant="compact"
-          showBack={true}
+        <CompactHeader
+          title="Kollaborators"
           onBack={() => navigation.goBack()}
         />
         <View style={styles.loadingContainer}>
@@ -355,10 +388,8 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
-        title="Collaborators"
-        variant="compact"
-        showBack={true}
+      <CompactHeader
+        title="Kollaborators"
         onBack={() => navigation.goBack()}
         rightButton={isOwner ? {
           icon: 'person-add',
@@ -370,7 +401,7 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
       <View style={styles.projectHeader}>
         <Text style={styles.projectTitle} numberOfLines={1}>{projectTitle}</Text>
         <Text style={styles.projectSubtitle}>
-          {collaborators.filter(c => c.invitation_status === 'accepted').length} active collaborators
+          {collaborators.filter(c => c.invitation_status === 'accepted').length} active kollaborators
         </Text>
       </View>
 
@@ -382,13 +413,13 @@ export default function CollaboratorsScreen({ route, navigation }: any) {
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
             <Ionicons name="people-outline" size={64} color={Colors.textSecondary} />
-            <Text style={styles.emptyText}>No collaborators yet</Text>
+            <Text style={styles.emptyText}>No kollaborators yet</Text>
             {isOwner && (
               <TouchableOpacity
                 style={styles.inviteButton}
                 onPress={() => navigation.navigate('InviteCollaborator', { projectId })}
               >
-                <Text style={styles.inviteButtonText}>+ Invite Collaborators</Text>
+                <Text style={styles.inviteButtonText}>+ Invite Kollaborators</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -534,6 +565,12 @@ const styles = StyleSheet.create({
     ...Typography.caption,
     color: Colors.textSecondary,
     alignSelf: 'center',
+  },
+  tapHint: {
+    position: 'absolute',
+    right: Spacing.md,
+    top: '50%',
+    marginTop: -8,
   },
   emptyContainer: {
     alignItems: 'center',

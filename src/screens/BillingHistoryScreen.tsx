@@ -3,13 +3,14 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
+  Alert,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 interface Invoice {
   id: string
@@ -22,33 +23,9 @@ interface Invoice {
 }
 
 export default function BillingHistoryScreen({ navigation }: any) {
-  // Mock data - in production, this would come from Stripe API
-  const invoices: Invoice[] = [
-    {
-      id: 'inv_001',
-      date: '2024-01-01',
-      amount: 25.00,
-      status: 'paid',
-      plan: 'Pro Plan',
-      period: 'January 2024',
-    },
-    {
-      id: 'inv_002',
-      date: '2023-12-01',
-      amount: 25.00,
-      status: 'paid',
-      plan: 'Pro Plan',
-      period: 'December 2023',
-    },
-    {
-      id: 'inv_003',
-      date: '2023-11-01',
-      amount: 25.00,
-      status: 'paid',
-      plan: 'Pro Plan',
-      period: 'November 2023',
-    },
-  ]
+  // Empty invoices until Stripe integration is complete
+  // In production, this would come from Stripe API
+  const invoices: Invoice[] = []
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString)
@@ -87,7 +64,9 @@ export default function BillingHistoryScreen({ navigation }: any) {
 
   const handleDownloadInvoice = (invoice: Invoice) => {
     // TODO: Implement invoice download from Stripe
-    console.log('Download invoice:', invoice.id)
+    if (__DEV__) console.log('Download invoice:', invoice.id)
+    // For now, show a coming soon message
+    Alert.alert('Coming Soon', 'Invoice downloads will be available when billing is set up.')
   }
 
   const renderInvoice = (invoice: Invoice) => (
@@ -143,11 +122,9 @@ export default function BillingHistoryScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Billing History"
         subtitle="Transaction History"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
       />
 

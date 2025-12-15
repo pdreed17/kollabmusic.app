@@ -50,6 +50,7 @@ interface AudioTrackPopupProps {
   projectId: string
   userId: string
   trackComments: Comment[]
+  onRefresh?: () => void
 }
 
 const MINIMIZED_HEIGHT = 80
@@ -61,7 +62,8 @@ export default function AudioTrackPopup({
   onClose,
   projectId,
   userId,
-  trackComments
+  trackComments,
+  onRefresh
 }: AudioTrackPopupProps) {
   // Animation States
   const slideAnim = useRef(new Animated.Value(screenHeight)).current
@@ -85,6 +87,12 @@ export default function AudioTrackPopup({
   const [showCommentModal, setShowCommentModal] = useState(false)
   const [newComment, setNewComment] = useState('')
   const [commentTimestamp, setCommentTimestamp] = useState(0)
+  const [localComments, setLocalComments] = useState<Comment[]>(trackComments)
+
+  // Sync local comments with prop changes
+  useEffect(() => {
+    setLocalComments(trackComments)
+  }, [trackComments])
 
   // Pan Responder for drag to close
   const panResponder = useRef(
@@ -176,14 +184,39 @@ export default function AudioTrackPopup({
         throw new Error('No file path provided')
       }
 
-      // For now, let's use duration from database and skip actual audio loading
-      // since the file paths might not be accessible URLs
-      setDuration(audioFile.duration_ms)
+      // Set audio mode for playback
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: false,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
+      })
 
-      // If you want to try loading actual audio files, uncomment below:
-      /*
+      // Generate signed URL from Supabase storage
+      let audioUri = audioFile.file_path
+
+      // Check if it's a Supabase storage path (not already a full URL)
+      if (!audioFile.file_path.startsWith('http')) {
+        console.log('Generating signed URL for:', audioFile.file_path)
+        const { data: signedUrlData, error: signedUrlError } = await supabase.storage
+          .from('audio-files')
+          .createSignedUrl(audioFile.file_path, 3600) // 1 hour expiry
+
+        if (signedUrlError) {
+          console.error('Error getting signed URL:', signedUrlError)
+          throw new Error(`Failed to get audio URL: ${signedUrlError.message}`)
+        }
+
+        if (signedUrlData?.signedUrl) {
+          audioUri = signedUrlData.signedUrl
+          console.log('Got signed URL successfully')
+        }
+      }
+
+      console.log('Loading audio from URI:', audioUri)
+
       const { sound: newSound } = await Audio.Sound.createAsync(
-        { uri: audioFile.file_path },
+        { uri: audioUri },
         { shouldPlay: false }
       )
 
@@ -200,16 +233,23 @@ export default function AudioTrackPopup({
         if (status.isLoaded) {
           setPosition(status.positionMillis || 0)
           setIsPlaying(status.isPlaying || false)
+
+          // Handle playback completion
+          if (status.didJustFinish) {
+            setPosition(0)
+            setIsPlaying(false)
+          }
         }
       })
-      */
 
-      console.log('Audio metadata loaded successfully')
-    } catch (error) {
+      console.log('Audio loaded successfully')
+    } catch (error: any) {
       console.error('Error loading audio:', error)
-      console.log('Using fallback duration from database:', audioFile.duration_ms)
       setDuration(audioFile.duration_ms)
-      // Don't show error alert for now, just log it
+      Alert.alert(
+        'Audio Load Error',
+        `Could not load audio file: ${error.message || 'Unknown error'}. You can still view track info.`
+      )
     } finally {
       setIsLoading(false)
     }
@@ -225,38 +265,22 @@ export default function AudioTrackPopup({
         } else {
           await sound.playAsync()
         }
-      } catch (error) {
+      } catch (error: any) {
         console.error('Error playing/pausing audio:', error)
+        Alert.alert(
+          'Playback Error',
+          `Could not play audio: ${error.message || 'Unknown error'}`
+        )
       }
+    } else if (isLoading) {
+      // Still loading, do nothing
+      console.log('Audio is still loading...')
     } else {
-      // If no audio loaded, simulate playback for UI demo
-      console.log('Simulating audio playback...')
-
-      if (isPlaying) {
-        // Pause simulation
-        if (playbackInterval.current) {
-          clearInterval(playbackInterval.current)
-          playbackInterval.current = null
-        }
-        setIsPlaying(false)
-      } else {
-        // Start simulation
-        setIsPlaying(true)
-        playbackInterval.current = setInterval(() => {
-          setPosition(prev => {
-            const newPos = prev + 1000 // Add 1 second
-            if (newPos >= duration) {
-              if (playbackInterval.current) {
-                clearInterval(playbackInterval.current)
-                playbackInterval.current = null
-              }
-              setIsPlaying(false)
-              return duration
-            }
-            return newPos
-          })
-        }, 1000)
-      }
+      // Audio failed to load
+      Alert.alert(
+        'Audio Not Available',
+        'The audio file could not be loaded. Please try again later.'
+      )
     }
   }
 
@@ -289,6 +313,15 @@ export default function AudioTrackPopup({
   const saveEdits = async () => {
     if (!audioFile) return
 
+    // Validate BPM if provided
+    if (editedBPM.trim()) {
+      const bpmValue = parseInt(editedBPM.trim())
+      if (isNaN(bpmValue) || bpmValue < 20 || bpmValue > 300) {
+        Alert.alert('Invalid BPM', 'BPM must be a number between 20 and 300')
+        return
+      }
+    }
+
     try {
       const updates: any = {
         stem_name: editedName.trim(),
@@ -311,6 +344,7 @@ export default function AudioTrackPopup({
 
       Alert.alert('Success', 'Audio file updated successfully')
       setIsEditing(false)
+      onRefresh?.()
     } catch (error) {
       console.error('Error saving edits:', error)
       Alert.alert('Error', 'Failed to save changes')
@@ -321,12 +355,12 @@ export default function AudioTrackPopup({
     if (!audioFile) return
 
     Alert.alert(
-      'Delete Track',
-      'Are you sure you want to delete this track? This action cannot be undone.',
+      'Delete Track Permanently?',
+      'This track will be permanently deleted and cannot be recovered. Make sure you have a backup if needed.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Delete',
+          text: 'Delete Forever',
           style: 'destructive',
           onPress: async () => {
             try {
@@ -338,6 +372,7 @@ export default function AudioTrackPopup({
               if (error) throw error
 
               Alert.alert('Success', 'Track deleted successfully')
+              onRefresh?.()
               closePopup() // Close popup after deletion
             } catch (error) {
               console.error('Error deleting track:', error)
@@ -353,7 +388,7 @@ export default function AudioTrackPopup({
     if (!newComment.trim() || !audioFile) return
 
     try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from('comments')
         .insert({
           project_id: projectId,
@@ -361,12 +396,26 @@ export default function AudioTrackPopup({
           content: newComment.trim(),
           timestamp_ms: commentTimestamp
         })
+        .select('id, content, timestamp_ms, created_at, users:user_id(username, display_name)')
+        .single()
 
       if (error) throw error
 
+      // Immediately add the new comment to local state so it shows up right away
+      if (data) {
+        const newCommentObj: Comment = {
+          id: data.id,
+          content: data.content,
+          timestamp_ms: data.timestamp_ms,
+          created_at: data.created_at,
+          users: data.users as any
+        }
+        setLocalComments(prev => [...prev, newCommentObj].sort((a, b) => a.timestamp_ms - b.timestamp_ms))
+      }
+
       setNewComment('')
       setShowCommentModal(false)
-      loadComments() // Refresh comments
+      onRefresh?.() // Also refresh parent for consistency
     } catch (error) {
       console.error('Error adding comment:', error)
       Alert.alert('Error', 'Failed to add comment')
@@ -374,6 +423,7 @@ export default function AudioTrackPopup({
   }
 
   const addCommentAtCurrentTime = () => {
+    setNewComment('') // Clear any previous comment text
     setCommentTimestamp(position)
     setShowCommentModal(true)
   }
@@ -472,11 +522,11 @@ export default function AudioTrackPopup({
                   onValueChange={seekTo}
                   minimumTrackTintColor={Colors.primary}
                   maximumTrackTintColor={Colors.border}
-                  thumbStyle={styles.sliderThumb}
+                  thumbTintColor={Colors.primary}
                 />
                 {/* Comment Icons on Timeline */}
                 <View style={styles.commentIndicators}>
-                  {trackComments.map((comment) => {
+                  {localComments.map((comment) => {
                     // Calculate precise position based on slider width
                     // Account for slider padding and thumb size for accurate alignment
                     const sliderPadding = 8 // Internal padding of slider
@@ -597,9 +647,9 @@ export default function AudioTrackPopup({
             {/* Comments Section */}
             <View style={styles.commentsSection}>
               <Text style={styles.commentsTitle}>
-                Track Comments ({trackComments.length})
+                Track Comments ({localComments.length})
               </Text>
-              {trackComments.slice(0, 3).map((comment) => (
+              {localComments.slice(0, 3).map((comment) => (
                 <View key={comment.id} style={styles.commentItem}>
                   <Text style={styles.commentTime}>
                     {formatTime(comment.timestamp_ms)}
@@ -609,9 +659,9 @@ export default function AudioTrackPopup({
                   </Text>
                 </View>
               ))}
-              {trackComments.length > 3 && (
+              {localComments.length > 3 && (
                 <Text style={styles.moreComments}>
-                  +{trackComments.length - 3} more comments
+                  +{localComments.length - 3} more comments
                 </Text>
               )}
             </View>

@@ -5,17 +5,17 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   Switch,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
 import { scale } from '../utils/responsive'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 // Collaboration skills options matching profile specialties
 const COLLABORATION_SKILLS = [
@@ -47,6 +47,9 @@ export default function EditProjectScreen({ route, navigation }: any) {
   const [isPublic, setIsPublic] = useState(false)
   const [status, setStatus] = useState<'active' | 'archived' | 'completed'>('active')
   const [collaborationNeeds, setCollaborationNeeds] = useState<string[]>([])
+  const [canEdit, setCanEdit] = useState(false)
+  const [canDelete, setCanDelete] = useState(false)
+  const [isOwner, setIsOwner] = useState(false)
 
   useEffect(() => {
     loadProject()
@@ -61,6 +64,35 @@ export default function EditProjectScreen({ route, navigation }: any) {
         .single()
 
       if (error) throw error
+
+      // Check if user is the owner
+      const userIsOwner = data.creator_id === user?.id
+      setIsOwner(userIsOwner)
+
+      // If not owner, check collaborator permissions
+      if (!userIsOwner) {
+        const { data: collabData } = await supabase
+          .from('project_collaborators')
+          .select('can_edit, can_delete')
+          .eq('project_id', projectId)
+          .eq('user_id', user?.id)
+          .single()
+
+        setCanEdit(collabData?.can_edit || false)
+        setCanDelete(collabData?.can_delete || false)
+
+        // If no edit permission, show error and go back
+        if (!collabData?.can_edit) {
+          Alert.alert('Permission Denied', 'You do not have permission to edit this project', [
+            { text: 'OK', onPress: () => navigation.goBack() }
+          ])
+          return
+        }
+      } else {
+        // Owner has all permissions
+        setCanEdit(true)
+        setCanDelete(true)
+      }
 
       setTitle(data.title)
       setDescription(data.description || '')
@@ -90,6 +122,15 @@ export default function EditProjectScreen({ route, navigation }: any) {
       return
     }
 
+    // Validate BPM if provided
+    if (bpm.trim()) {
+      const bpmValue = parseInt(bpm.trim())
+      if (isNaN(bpmValue) || bpmValue < 20 || bpmValue > 300) {
+        Alert.alert('Invalid BPM', 'BPM must be a number between 20 and 300')
+        return
+      }
+    }
+
     setSaving(true)
 
     try {
@@ -99,7 +140,7 @@ export default function EditProjectScreen({ route, navigation }: any) {
           title: title.trim(),
           description: description.trim() || null,
           genre: genre.trim() || null,
-          bpm: bpm ? parseInt(bpm) : null,
+          bpm: bpm.trim() ? parseInt(bpm.trim()) : null,
           key: key.trim() || null,
           is_public: isPublic,
           collaboration_needs: collaborationNeeds,
@@ -142,6 +183,11 @@ export default function EditProjectScreen({ route, navigation }: any) {
   }
 
   const handleDelete = () => {
+    if (!canDelete) {
+      Alert.alert('Permission Denied', 'You do not have permission to delete this project')
+      return
+    }
+
     Alert.alert(
       'Delete Project?',
       'This will permanently delete this project and all its files. This cannot be undone.',
@@ -159,8 +205,14 @@ export default function EditProjectScreen({ route, navigation }: any) {
 
               if (error) throw error
 
+              // Navigate back and trigger refresh
               Alert.alert('Deleted', 'Project deleted successfully', [
-                { text: 'OK', onPress: () => navigation.navigate('ProjectsList') }
+                {
+                  text: 'OK',
+                  onPress: () => {
+                    navigation.navigate('Projects', { refresh: true })
+                  }
+                }
               ])
             } catch (error) {
               console.error('Error deleting project:', error)
@@ -183,14 +235,9 @@ export default function EditProjectScreen({ route, navigation }: any) {
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header
+        <CompactHeader
           title="Edit Project"
-          variant="compact"
-          showBack={true}
           onBack={() => navigation.goBack()}
-          showProfile={true}
-          onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
         />
         <View style={styles.loadingContainer}>
           <Text style={styles.loadingText}>Loading...</Text>
@@ -201,14 +248,9 @@ export default function EditProjectScreen({ route, navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Edit Project"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
 
       <ScrollView 
@@ -233,7 +275,7 @@ export default function EditProjectScreen({ route, navigation }: any) {
           <Text style={styles.label}>Description</Text>
           <TextInput
             style={[styles.input, styles.textArea]}
-            placeholder="Tell collaborators about your project..."
+            placeholder="Tell others about your project..."
             placeholderTextColor={Colors.textSecondary}
             value={description}
             onChangeText={setDescription}
@@ -301,7 +343,7 @@ export default function EditProjectScreen({ route, navigation }: any) {
 
         {/* Collaboration Needs */}
         <View style={styles.collaborationSection}>
-          <Text style={styles.sectionTitle}>Looking for Collaborators</Text>
+          <Text style={styles.sectionTitle}>Looking for Kollabs</Text>
           <Text style={styles.sectionDescription}>
             Select the skills/roles you need help with. This will be visible to users searching for projects.
           </Text>
@@ -436,13 +478,15 @@ export default function EditProjectScreen({ route, navigation }: any) {
         </TouchableOpacity>
 
         {/* Delete Button */}
-        <TouchableOpacity
-          style={styles.deleteButton}
-          onPress={handleDelete}
-        >
-          <Ionicons name="trash-outline" size={20} color={Colors.error} />
-          <Text style={styles.deleteButtonText}>Delete Project</Text>
-        </TouchableOpacity>
+        {canDelete && (
+          <TouchableOpacity
+            style={styles.deleteButton}
+            onPress={handleDelete}
+          >
+            <Ionicons name="trash-outline" size={20} color={Colors.error} />
+            <Text style={styles.deleteButtonText}>Delete Project</Text>
+          </TouchableOpacity>
+        )}
 
         <View style={styles.bottomSpacer} />
       </ScrollView>

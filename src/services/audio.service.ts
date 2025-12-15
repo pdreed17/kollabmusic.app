@@ -50,7 +50,7 @@ class AudioService {
       if (error) throw error
       return data || []
     } catch (error) {
-      console.error('Error getting audio files:', error)
+      if (__DEV__) console.error('Error getting audio files:', error)
       throw error
     }
   }
@@ -67,7 +67,7 @@ class AudioService {
       if (error) throw error
       return data.signedUrl
     } catch (error) {
-      console.error('Error getting audio URL:', error)
+      if (__DEV__) console.error('Error getting audio URL:', error)
       throw error
     }
   }
@@ -92,7 +92,7 @@ class AudioService {
 
       if (error) throw error
     } catch (error) {
-      console.error('Error updating mixer settings:', error)
+      if (__DEV__) console.error('Error updating mixer settings:', error)
       throw error
     }
   }
@@ -116,7 +116,7 @@ class AudioService {
 
       return 0
     } catch (error) {
-      console.error('Error getting audio duration:', error)
+      if (__DEV__) console.error('Error getting audio duration:', error)
       return 0
     }
   }
@@ -196,7 +196,7 @@ class AudioService {
 
       return { audioFile }
     } catch (error) {
-      console.error('Error uploading audio file:', error)
+      if (__DEV__) console.error('Error uploading audio file:', error)
       return { error }
     }
   }
@@ -211,7 +211,7 @@ class AudioService {
         .from('audio-files')
         .remove([filePath])
 
-      if (storageError) console.error('Storage delete error:', storageError)
+      if (storageError && __DEV__) console.error('Storage delete error:', storageError)
 
       // Delete from database
       const { error: dbError} = await supabase
@@ -221,7 +221,7 @@ class AudioService {
 
       if (dbError) throw dbError
     } catch (error) {
-      console.error('Error deleting audio file:', error)
+      if (__DEV__) console.error('Error deleting audio file:', error)
       throw error
     }
   }
@@ -288,7 +288,7 @@ class AudioService {
 
       return null
     } catch (error) {
-      console.error('Error extracting audio metadata:', error)
+      if (__DEV__) console.error('Error extracting audio metadata:', error)
       return null
     }
   }

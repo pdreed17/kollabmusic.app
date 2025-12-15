@@ -4,7 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   FlatList,
   ActivityIndicator,
@@ -12,11 +11,11 @@ import {
   Image,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
+import { useFocusEffect } from '@react-navigation/native'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
 import ProjectIcon from '../components/ProjectIcon'
-import Header from '../components/Header'
 import { SkeletonList, ProjectCardSkeleton } from '../components/LoadingSkeleton'
 import { hasSkillMatch } from '../utils/skillMatching'
 import { scale } from '../utils/responsive'
@@ -38,42 +37,72 @@ export default function HomeScreen({ navigation }: any) {
   const [collabIds, setCollabIds] = useState<string[]>([])
 
   useEffect(() => {
-    loadHomeData()
-    
-    // Set up real-time subscription for invitations count
-    const invitationsSubscription = supabase
-      .channel('home-invitations')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'collaborators',
-          filter: `user_id=eq.${user?.id}`
-        },
-        () => {
-          loadInvitationsCount()
-        }
-      )
-      .subscribe()
+    if (user?.id) {
+      loadHomeData()
 
-    return () => {
-      invitationsSubscription.unsubscribe()
+      // Set up real-time subscription for invitations count
+      const invitationsSubscription = supabase
+        .channel('home-invitations')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',  // Listen for all changes (INSERT, UPDATE, DELETE)
+            schema: 'public',
+            table: 'project_collaborators',
+            filter: `user_id=eq.${user.id}`
+          },
+          () => {
+            loadInvitationsCount()
+          }
+        )
+        .subscribe()
+
+      // Set up real-time subscription for activity feed updates
+      const activitySubscription = supabase
+        .channel('home-activity')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'projects'
+          },
+          () => {
+            loadActivityFeed()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'audio_files'
+          },
+          () => {
+            loadActivityFeed()
+          }
+        )
+        .subscribe()
+
+      return () => {
+        invitationsSubscription.unsubscribe()
+        activitySubscription.unsubscribe()
+      }
     }
-  }, [])
+  }, [user?.id])
 
   useEffect(() => {
-    if (!loading) {
+    if (!loading && user?.id) {
       loadActivityFeed()
     }
-  }, [feedFilter])
+  }, [feedFilter, loading, user?.id, collabIds])
 
-  const loadInvitationsCount = async () => {
+  const loadInvitationsCount = useCallback(async () => {
     try {
       if (!user?.id) return
 
       const { count: inviteCount } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select('*', { count: 'exact', head: true })
         .eq('user_id', user.id)
         .eq('invitation_status', 'pending')
@@ -81,9 +110,18 @@ export default function HomeScreen({ navigation }: any) {
       setPendingInvites(inviteCount || 0)
     } catch (error) {
     }
-  }
+  }, [user?.id])
 
-  const loadHomeData = async () => {
+  // Reload invitation count when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (!loading && user?.id) {
+        loadInvitationsCount()
+      }
+    }, [loading, user?.id, loadInvitationsCount])
+  )
+
+  const loadHomeData = useCallback(async () => {
     try {
       if (!user?.id) return
 
@@ -96,25 +134,37 @@ export default function HomeScreen({ navigation }: any) {
 
       setRecentProjects(projects || [])
 
-      const { data: collaborators } = await supabase
-        .from('collaborators')
-        .select('user_id, project_id')
-        .eq('invitation_status', 'accepted')
-        .eq('user_id', user.id)
+      // Get projects user OWNS
+      const { data: ownedProjects } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('creator_id', user.id)
 
-      // Get unique collaborator IDs from projects where user is collaborating
-      const projectIds = collaborators?.map(c => c.project_id) || []
-      
-      if (projectIds.length > 0) {
+      // Get projects user is INVITED to as collaborator
+      const { data: invitedProjects } = await supabase
+        .from('project_collaborators')
+        .select('project_id')
+        .eq('user_id', user.id)
+        .eq('invitation_status', 'accepted')
+
+      // Combine both sets of project IDs
+      const ownedIds = ownedProjects?.map(p => p.id) || []
+      const invitedIds = invitedProjects?.map(c => c.project_id) || []
+      const allProjectIds = [...new Set([...ownedIds, ...invitedIds])]
+
+      if (allProjectIds.length > 0) {
+        // Get all collaborators from these projects (excluding current user)
         const { data: projectCollaborators } = await supabase
-          .from('collaborators')
+          .from('project_collaborators')
           .select('user_id')
-          .in('project_id', projectIds)
+          .in('project_id', allProjectIds)
           .eq('invitation_status', 'accepted')
           .neq('user_id', user.id)
 
         const uniqueCollabIds = [...new Set(projectCollaborators?.map(c => c.user_id))] as string[]
         setCollabIds(uniqueCollabIds)
+      } else {
+        setCollabIds([])
       }
 
       const { count: unreadMessages } = await supabase
@@ -134,168 +184,244 @@ export default function HomeScreen({ navigation }: any) {
       setLoading(false)
       setRefreshing(false)
     }
-  }
+  }, [user?.id, loadInvitationsCount])
 
-  const loadActivityFeed = async () => {
+  const loadActivityFeed = useCallback(async () => {
     try {
       if (!user?.id) return
 
-      let query = supabase
-        .from('comments')
-        .select(`
-          *,
-          projects(id, title, is_public, collaboration_needs),
-          users!comments_user_id_fkey(username, display_name),
-          audio_files(stem_name, file_name)
-        `)
-        .neq('user_id', user.id) // Exclude current user's own activity
-        .order('created_at', { ascending: false })
+      const activities: any[] = []
+
+      // Load blocked user IDs to filter them out
+      const { data: blockedUsers } = await supabase
+        .from('blocked_users')
+        .select('blocked_id')
+        .eq('blocker_id', user.id)
+
+      const blockedUserIds = blockedUsers?.map(b => b.blocked_id) || []
 
       if (feedFilter === 'all') {
-        query = query.eq('projects.is_public', true)
-        query = query.limit(30)
+        // Load recent public projects
+        const { data: projects } = await supabase
+          .from('projects')
+          .select('*, users!projects_creator_id_fkey(username, display_name)')
+          .eq('is_public', true)
+          .neq('creator_id', user.id) // Exclude current user's projects
+          .order('created_at', { ascending: false })
+          .limit(15)
+
+        if (projects) {
+          projects.forEach(project => {
+            // Skip if creator is blocked
+            if (blockedUserIds.includes(project.creator_id)) {
+              return
+            }
+
+            activities.push({
+              id: `project-${project.id}`,
+              type: 'project_created',
+              created_at: project.created_at,
+              projects: {
+                id: project.id,
+                title: project.title,
+                is_public: project.is_public,
+                collaboration_needs: project.collaboration_needs,
+                genre: project.genre
+              },
+              users: project.users,
+              project_data: project
+            })
+          })
+        }
+
+        // Load recent audio uploads from public projects
+        const { data: audioFiles } = await supabase
+          .from('audio_files')
+          .select(`
+            *,
+            projects!audio_files_project_id_fkey(id, title, is_public, collaboration_needs, creator_id, genre),
+            users!audio_files_created_by_fkey(username, display_name)
+          `)
+          .eq('projects.is_public', true)
+          .neq('created_by', user.id) // Exclude current user's uploads
+          .order('created_at', { ascending: false })
+          .limit(15)
+
+        if (audioFiles) {
+          audioFiles.forEach(file => {
+            // Skip if uploader is blocked
+            if (blockedUserIds.includes(file.created_by)) {
+              return
+            }
+
+            activities.push({
+              id: `audio-${file.id}`,
+              type: 'file_uploaded',
+              created_at: file.created_at,
+              projects: file.projects,
+              users: file.users,
+              audio_files: {
+                id: file.id,
+                stem_name: file.stem_name,
+                file_name: file.file_name,
+                stem_type: file.stem_type
+              }
+            })
+          })
+        }
       } else {
+        // Show activity only from collaborators
         if (collabIds.length > 0) {
-          query = query.in('user_id', collabIds)
-          query = query.limit(20)
+          // Load projects from collaborators
+          const { data: projects } = await supabase
+            .from('projects')
+            .select('*, users!projects_creator_id_fkey(username, display_name)')
+            .in('creator_id', collabIds)
+            .order('created_at', { ascending: false })
+            .limit(10)
+
+          if (projects) {
+            projects.forEach(project => {
+              // Skip if creator is blocked
+              if (blockedUserIds.includes(project.creator_id)) {
+                return
+              }
+
+              activities.push({
+                id: `project-${project.id}`,
+                type: 'project_created',
+                created_at: project.created_at,
+                projects: {
+                  id: project.id,
+                  title: project.title,
+                  is_public: project.is_public,
+                  collaboration_needs: project.collaboration_needs,
+                  genre: project.genre
+                },
+                users: project.users,
+                project_data: project
+              })
+            })
+          }
+
+          // Load audio files from collaborators
+          const { data: audioFiles } = await supabase
+            .from('audio_files')
+            .select(`
+              *,
+              projects!audio_files_project_id_fkey(id, title, is_public, collaboration_needs, genre),
+              users!audio_files_created_by_fkey(username, display_name)
+            `)
+            .in('created_by', collabIds)
+            .order('created_at', { ascending: false })
+            .limit(10)
+
+          if (audioFiles) {
+            audioFiles.forEach(file => {
+              // Skip if uploader is blocked
+              if (blockedUserIds.includes(file.created_by)) {
+                return
+              }
+
+              activities.push({
+                id: `audio-${file.id}`,
+                type: 'file_uploaded',
+                created_at: file.created_at,
+                projects: file.projects,
+                users: file.users,
+                audio_files: {
+                  id: file.id,
+                  stem_name: file.stem_name,
+                  file_name: file.file_name,
+                  stem_type: file.stem_type
+                }
+              })
+            })
+          }
         } else {
           setActivityFeed([])
           return
         }
       }
 
-      const { data: activity } = await query
+      // Sort all activities by created_at
+      activities.sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      )
 
-      setActivityFeed(activity || [])
+      setActivityFeed(activities.slice(0, 30))
 
     } catch (error) {
+      console.error('Error loading activity feed:', error)
     }
-  }
+  }, [user?.id, feedFilter, collabIds])
 
-  const onRefresh = () => {
+  const onRefresh = useCallback(() => {
     setRefreshing(true)
     loadHomeData()
-  }
+  }, [loadHomeData])
 
-  const getActivityIcon = (activity: any) => {
-    if (activity.timestamp_ms) return 'chatbox-ellipses'
+  const getActivityIcon = useCallback((activity: any) => {
+    if (activity.type === 'project_created') return 'folder-open'
+    if (activity.type === 'file_uploaded') return 'musical-note'
     return 'chatbubble'
-  }
+  }, [])
 
-  const getActivityColor = (activity: any) => {
-    if (activity.timestamp_ms) return Colors.primary
+  const getActivityColor = useCallback((activity: any) => {
+    if (activity.type === 'project_created') return Colors.primary
+    if (activity.type === 'file_uploaded') return Colors.success
     return Colors.info
-  }
+  }, [])
 
-  const formatTimeAgo = (date: string) => {
+  const getActivityText = useCallback((activity: any) => {
+    const userName = activity.users?.display_name || activity.users?.username || 'Someone'
+
+    if (activity.type === 'project_created') {
+      return `${userName} created "${activity.projects?.title}"`
+    }
+    if (activity.type === 'file_uploaded') {
+      return `${userName} uploaded "${activity.audio_files?.stem_name}" to ${activity.projects?.title}`
+    }
+    return activity.content || 'New activity'
+  }, [])
+
+  const handleActivityPress = useCallback((activity: any) => {
+    if (!activity.projects?.id) return
+
+    // Navigate to ProjectDetail for both project creation and file uploads
+    navigation.navigate('ProjectDetail', { projectId: activity.projects.id })
+  }, [navigation])
+
+  const formatTimeAgo = useCallback((date: string) => {
     const seconds = Math.floor((new Date().getTime() - new Date(date).getTime()) / 1000)
-    
+
     if (seconds < 60) return 'just now'
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`
     if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`
     return new Date(date).toLocaleDateString()
-  }
+  }, [])
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
-        {/* Custom Header with Logo */}
-        <View style={styles.customHeader}>
-          {/* Center Logo */}
-          <View style={styles.headerCenter}>
-            <Image
-              source={require('../../assets/logo-wordmark.png')}
-              style={styles.logoImage}
-              resizeMode="contain"
-            />
-            <Text style={styles.kollabText}>kollab</Text>
-          </View>
-
-          {/* Right Profile Button */}
-          <View style={styles.headerRight}>
-            <TouchableOpacity
-              style={styles.profileButton}
-              onPress={() => navigation.navigate('Profile')}
-            >
-              {userProfile?.avatar_url ? (
-                <Image
-                  source={{ uri: userProfile.avatar_url }}
-                  style={styles.profilePhoto}
-                />
-              ) : (
-                <Ionicons name="person-circle-outline" size={40} color={Colors.primary} />
-              )}
-            </TouchableOpacity>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
+        <View style={styles.commandZone}>
+          <View style={styles.welcomeSection}>
+            <Text style={styles.greeting}>Loading...</Text>
           </View>
         </View>
-        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-          <View style={styles.commandZone}>
-            <View style={styles.welcomeSection}>
-              <Text style={styles.greeting}>Loading...</Text>
-            </View>
+        <View style={styles.feedZone}>
+          <View style={styles.feedHeader}>
+            <Text style={styles.feedTitle}>What's Happening</Text>
           </View>
-          <View style={styles.feedZone}>
-            <View style={styles.feedHeader}>
-              <Text style={styles.feedTitle}>What's Happening</Text>
-            </View>
-            <SkeletonList count={4} type="project" />
-          </View>
-        </ScrollView>
-      </SafeAreaView>
+          <SkeletonList count={4} type="project" />
+        </View>
+      </ScrollView>
     )
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Custom Header with Logo */}
-      <View style={styles.customHeader}>
-        {/* Left Button */}
-        {pendingInvites > 0 && (
-          <View style={styles.headerLeft}>
-            <TouchableOpacity
-              style={styles.invitationsButton}
-              onPress={() => navigation.navigate('PendingInvitations')}
-            >
-              <Ionicons name="mail" size={28} color={Colors.primary} />
-              <View style={styles.invitationsBadge}>
-                <Text style={styles.invitationsBadgeText}>
-                  {pendingInvites > 9 ? '9+' : pendingInvites}
-                </Text>
-              </View>
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Center Logo */}
-        <View style={styles.headerCenter}>
-          <Image
-            source={require('../../assets/logo-wordmark.png')}
-            style={styles.logoImage}
-            resizeMode="contain"
-          />
-          <Text style={styles.kollabText}>kollab</Text>
-        </View>
-
-        {/* Right Profile Button */}
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            style={styles.profileButton}
-            onPress={() => navigation.navigate('Profile')}
-          >
-            {userProfile?.avatar_url ? (
-              <Image
-                source={{ uri: userProfile.avatar_url }}
-                style={styles.profilePhoto}
-              />
-            ) : (
-              <Ionicons name="person-circle-outline" size={40} color={Colors.primary} />
-            )}
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <ScrollView 
+    <ScrollView 
         style={styles.scrollView}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -445,7 +571,7 @@ export default function HomeScreen({ navigation }: any) {
                   ]}
                   numberOfLines={1}
                 >
-                  My Collabs
+                  My Kollabs
                 </Text>
                 {collabIds.length > 0 && (
                   <View style={styles.filterBadge}>
@@ -461,19 +587,19 @@ export default function HomeScreen({ navigation }: any) {
             <View style={styles.emptyFeed}>
               <Ionicons name="chatbubbles-outline" size={48} color={Colors.textSecondary} />
               <Text style={styles.emptyFeedTitle}>
-                {feedFilter === 'all' ? 'No Activity Yet' : 'No Collaborator Activity'}
+                {feedFilter === 'all' ? 'No Activity Yet' : 'No Kollaborator Activity'}
               </Text>
               <Text style={styles.emptyFeedText}>
-                {feedFilter === 'all' 
-                  ? 'Start collaborating to see updates here'
-                  : 'Activity from your collaborators will appear here'
+                {feedFilter === 'all'
+                  ? 'Start kollaborating to see updates here'
+                  : 'Activity from your kollaborators will appear here'
                 }
               </Text>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={styles.emptyFeedButton}
                 onPress={() => navigation.navigate('Search')}
               >
-                <Text style={styles.emptyFeedButtonText}>Find Collaborators</Text>
+                <Text style={styles.emptyFeedButtonText}>Find Kollaborators</Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -491,16 +617,14 @@ export default function HomeScreen({ navigation }: any) {
                     styles.activityCard,
                     matchesSkills && styles.activityCardMatched
                   ]}
-                  onPress={() => navigation.navigate('ProjectStudio', {
-                    projectId: activity.project_id
-                  })}
+                  onPress={() => handleActivityPress(activity)}
                 >
                   <View style={[
                     styles.activityIcon,
                     { backgroundColor: `${getActivityColor(activity)}20` }
                   ]}>
                     <Ionicons
-                      name={getActivityIcon(activity)}
+                      name={getActivityIcon(activity) as any}
                       size={20}
                       color={getActivityColor(activity)}
                     />
@@ -508,14 +632,8 @@ export default function HomeScreen({ navigation }: any) {
 
                   <View style={styles.activityContent}>
                     <View style={styles.activityHeader}>
-                      <Text style={styles.activityText}>
-                        <Text style={styles.activityUser}>
-                          {activity.users?.display_name || activity.users?.username}
-                        </Text>
-                        {' commented on '}
-                        <Text style={styles.activityProject}>
-                          {activity.projects?.title}
-                        </Text>
+                      <Text style={styles.activityText} numberOfLines={2}>
+                        {getActivityText(activity)}
                       </Text>
                       {matchesSkills && (
                         <View style={styles.skillsMatchBadgeSmall}>
@@ -525,25 +643,23 @@ export default function HomeScreen({ navigation }: any) {
                       )}
                     </View>
 
-                    <Text style={styles.activityComment} numberOfLines={2}>
-                      "{activity.content}"
-                    </Text>
+                    {(activity.project_data?.genre || activity.project_data?.bpm || activity.project_data?.key) && (
+                      <View style={styles.genreBadge}>
+                        <Text style={styles.genreText}>
+                          {[
+                            activity.project_data?.genre,
+                            activity.project_data?.bpm ? `${activity.project_data.bpm} BPM` : null,
+                            activity.project_data?.key
+                          ].filter(Boolean).join(' • ')}
+                        </Text>
+                      </View>
+                    )}
 
                     <View style={styles.activityMeta}>
                       <Ionicons name="time-outline" size={12} color={Colors.textTertiary} />
                       <Text style={styles.activityTime}>
                         {formatTimeAgo(activity.created_at)}
                       </Text>
-                      {activity.timestamp_ms && (
-                        <>
-                          <Text style={styles.activityDot}>•</Text>
-                          <Ionicons name="musical-note" size={12} color={Colors.textTertiary} />
-                          <Text style={styles.activityTimestamp}>
-                            {Math.floor(activity.timestamp_ms / 1000 / 60)}:
-                            {String(Math.floor((activity.timestamp_ms / 1000) % 60)).padStart(2, '0')}
-                          </Text>
-                        </>
-                      )}
                     </View>
                   </View>
 
@@ -556,7 +672,6 @@ export default function HomeScreen({ navigation }: any) {
           <View style={styles.feedBottomSpacer} />
         </View>
       </ScrollView>
-    </SafeAreaView>
   )
 }
 
@@ -952,5 +1067,18 @@ const styles = StyleSheet.create({
     color: Colors.success,
     fontWeight: '700',
     fontSize: scale(10),
+  },
+  genreBadge: {
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xxs,
+    borderRadius: BorderRadius.sm,
+    alignSelf: 'flex-start',
+    marginBottom: Spacing.xs,
+  },
+  genreText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontWeight: '600',
   },
 })

@@ -1,21 +1,22 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
+
   ScrollView,
   Image,
   ActivityIndicator,
   Alert,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
+import { useFocusEffect } from '@react-navigation/native'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
 import HighlightPlayer from '../components/HighlightPlayer'
+import { SUBSCRIPTION_LIMITS, getUserUsageStats, getUserStorageStats, formatStorage, SubscriptionTier } from '../utils/subscriptionLimits'
 
 const SPECIALTY_ICONS: { [key: string]: string } = {
   vocals: 'mic',
@@ -77,7 +78,7 @@ interface UserStats {
 }
 
 export default function ProfileScreen({ navigation }: any) {
-  const { user, userProfile } = useAuth()
+  const { user, userProfile, signOut, refreshUserProfile } = useAuth()
   const [stats, setStats] = useState<UserStats>({
     projectsCreated: 0,
     collaborations: 0,
@@ -87,13 +88,68 @@ export default function ProfileScreen({ navigation }: any) {
   const [recentProjects, setRecentProjects] = useState<any[]>([])
   const [highlights, setHighlights] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [subscriptionUsage, setSubscriptionUsage] = useState<{
+    tier: SubscriptionTier
+    ownedProjects: number
+    activeCollabs: number
+  } | null>(null)
+  const [storageStats, setStorageStats] = useState<{
+    storageUsed: number
+    storageLimit: number
+    storageUsedFormatted: string
+    storageLimitFormatted: string
+    percentageUsed: number
+    isNearLimit: boolean
+  } | null>(null)
 
   useEffect(() => {
     if (user) {
       loadUserData()
       loadHighlights()
+      loadSubscriptionUsage()
     }
   }, [user])
+
+  const loadSubscriptionUsage = async () => {
+    if (!user) return
+    try {
+      const [usage, storage] = await Promise.all([
+        getUserUsageStats(user.id),
+        getUserStorageStats(user.id),
+      ])
+      if (usage) {
+        setSubscriptionUsage({
+          tier: usage.tier,
+          ownedProjects: usage.usage.ownedProjects,
+          activeCollabs: usage.usage.activeCollabs,
+        })
+      }
+      if (storage) {
+        setStorageStats({
+          storageUsed: storage.storageUsed,
+          storageLimit: storage.storageLimit,
+          storageUsedFormatted: storage.storageUsedFormatted,
+          storageLimitFormatted: storage.storageLimitFormatted,
+          percentageUsed: storage.percentageUsed,
+          isNearLimit: storage.isNearLimit,
+        })
+      }
+    } catch (error) {
+      console.error('Error loading subscription usage:', error)
+    }
+  }
+
+  // Reload profile data when screen comes into focus (after editing profile or uploading highlight)
+  useFocusEffect(
+    useCallback(() => {
+      if (user) {
+        refreshUserProfile() // Refresh userProfile context (includes isOpenToKollab)
+        loadUserData() // Refresh stats and projects
+        loadSubscriptionUsage() // Refresh subscription usage
+        loadHighlights() // Refresh highlights (for new uploads)
+      }
+    }, [user, refreshUserProfile])
+  )
 
   const loadUserData = async () => {
     if (!user) return
@@ -117,7 +173,7 @@ export default function ProfileScreen({ navigation }: any) {
           .neq('status', 'deleted'),
 
         supabase
-          .from('collaborators')
+          .from('project_collaborators')
           .select('*', { count: 'exact', head: true })
           .eq('user_id', user.id)
           .eq('invitation_status', 'accepted')
@@ -126,11 +182,11 @@ export default function ProfileScreen({ navigation }: any) {
         supabase
           .from('audio_files')
           .select('*', { count: 'exact', head: true })
-          .eq('created_by', user.id),
+          .eq('creator_id', user.id),
 
         projectIds.length > 0
           ? supabase
-              .from('collaborators')
+              .from('project_collaborators')
               .select('user_id')
               .in('project_id', projectIds)
               .eq('invitation_status', 'accepted')
@@ -269,20 +325,30 @@ export default function ProfileScreen({ navigation }: any) {
     return date.toLocaleDateString()
   }
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <Header
-        title="Profile"
-        variant="compact"
-        showProfile={false}
-        showBack={true}
-        onBack={() => navigation.goBack()}
-        rightButton={{
-          icon: 'settings-outline',
-          onPress: () => navigation.navigate('Settings'),
-        }}
-      />
+  const handleSignOut = () => {
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to sign out?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await signOut()
+            } catch (error) {
+              console.error('Sign out error:', error)
+              Alert.alert('Error', 'Failed to sign out. Please try again.')
+            }
+          },
+        },
+      ]
+    )
+  }
 
+  return (
+    <>
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Profile Header */}
         <View style={styles.profileHeader}>
@@ -317,7 +383,7 @@ export default function ProfileScreen({ navigation }: any) {
               color={isOpenToKollab ? Colors.success : Colors.textSecondary}
             />
             <Text style={[styles.kollabBadgeText, isOpenToKollab && styles.kollabBadgeTextActive]}>
-              {isOpenToKollab ? 'Open to Collaborate' : 'Not Available'}
+              {isOpenToKollab ? 'Open to Kollab' : 'Not Available'}
             </Text>
           </View>
 
@@ -343,7 +409,7 @@ export default function ProfileScreen({ navigation }: any) {
             <View style={styles.statCard}>
               <Ionicons name="git-network" size={24} color={Colors.primary} />
               <Text style={styles.statNumber}>{stats.collaborations}</Text>
-              <Text style={styles.statLabel} numberOfLines={2}>Collabs</Text>
+              <Text style={styles.statLabel} numberOfLines={2}>Kollabs</Text>
             </View>
             <View style={styles.statCard}>
               <Ionicons name="cloud-upload" size={24} color={Colors.primary} />
@@ -352,11 +418,160 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
             <View style={styles.statCard}>
               <Ionicons name="people" size={24} color={Colors.primary} />
-              <Text style={styles.statNumber}>{stats.totalCollaborators}</Text>
-              <Text style={styles.statLabel} numberOfLines={2}>Team</Text>
+              <Text style={styles.statNumber}>{userProfile?.followers_count || 0}</Text>
+              <Text style={styles.statLabel} numberOfLines={2}>Konnects</Text>
             </View>
           </View>
         </View>
+
+        {/* Subscription Usage Card */}
+        {subscriptionUsage && (
+          <View style={styles.subscriptionCard}>
+            <View style={styles.subscriptionHeader}>
+              <View style={styles.subscriptionTierBadge}>
+                <Ionicons
+                  name={subscriptionUsage.tier === 'pro' ? 'star' : 'person'}
+                  size={16}
+                  color={subscriptionUsage.tier === 'pro' ? Colors.warning : Colors.textSecondary}
+                />
+                <Text style={[
+                  styles.subscriptionTierText,
+                  subscriptionUsage.tier === 'pro' && styles.subscriptionTierTextPro
+                ]}>
+                  {subscriptionUsage.tier === 'pro' ? 'Pro' : 'Free'} Plan
+                </Text>
+              </View>
+              {subscriptionUsage.tier === 'free' && (
+                <TouchableOpacity
+                  style={styles.upgradeButton}
+                  onPress={() => navigation.navigate('Subscription')}
+                >
+                  <Text style={styles.upgradeButtonText}>Upgrade</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {subscriptionUsage.tier === 'free' ? (
+              <View style={styles.usageBars}>
+                {/* Owned Projects */}
+                <View style={styles.usageRow}>
+                  <View style={styles.usageInfo}>
+                    <Text style={styles.usageLabel}>Owned Projects</Text>
+                    <Text style={styles.usageCount}>
+                      {subscriptionUsage.ownedProjects} / {SUBSCRIPTION_LIMITS.free.ownedProjectsLimit}
+                    </Text>
+                  </View>
+                  <View style={styles.usageBarContainer}>
+                    <View
+                      style={[
+                        styles.usageBarFill,
+                        {
+                          width: `${Math.min(100, (subscriptionUsage.ownedProjects / SUBSCRIPTION_LIMITS.free.ownedProjectsLimit) * 100)}%`,
+                          backgroundColor: subscriptionUsage.ownedProjects >= SUBSCRIPTION_LIMITS.free.ownedProjectsLimit
+                            ? Colors.error
+                            : Colors.primary
+                        }
+                      ]}
+                    />
+                  </View>
+                </View>
+
+                {/* Active Collaborations */}
+                <View style={styles.usageRow}>
+                  <View style={styles.usageInfo}>
+                    <Text style={styles.usageLabel}>Kollab Projects</Text>
+                    <Text style={styles.usageCount}>
+                      {subscriptionUsage.activeCollabs} / {SUBSCRIPTION_LIMITS.free.activeCollabsLimit}
+                    </Text>
+                  </View>
+                  <View style={styles.usageBarContainer}>
+                    <View
+                      style={[
+                        styles.usageBarFill,
+                        {
+                          width: `${Math.min(100, (subscriptionUsage.activeCollabs / SUBSCRIPTION_LIMITS.free.activeCollabsLimit) * 100)}%`,
+                          backgroundColor: subscriptionUsage.activeCollabs >= SUBSCRIPTION_LIMITS.free.activeCollabsLimit
+                            ? Colors.error
+                            : Colors.primary
+                        }
+                      ]}
+                    />
+                  </View>
+                </View>
+
+                {/* Track Limit Info */}
+                <View style={styles.trackLimitInfo}>
+                  <Ionicons name="information-circle-outline" size={16} color={Colors.textSecondary} />
+                  <Text style={styles.trackLimitText}>
+                    {SUBSCRIPTION_LIMITS.free.tracksPerProjectLimit} tracks per project
+                  </Text>
+                </View>
+
+                {/* Storage Usage */}
+                {storageStats && (
+                  <View style={styles.usageRow}>
+                    <View style={styles.usageInfo}>
+                      <Text style={styles.usageLabel}>Storage</Text>
+                      <Text style={[styles.usageCount, storageStats.isNearLimit && styles.usageCountWarning]}>
+                        {storageStats.storageUsedFormatted} / {storageStats.storageLimitFormatted}
+                      </Text>
+                    </View>
+                    <View style={styles.usageBarContainer}>
+                      <View
+                        style={[
+                          styles.usageBarFill,
+                          {
+                            width: `${Math.min(100, storageStats.percentageUsed)}%`,
+                            backgroundColor: storageStats.isNearLimit
+                              ? Colors.warning
+                              : storageStats.percentageUsed >= 100
+                                ? Colors.error
+                                : Colors.primary
+                          }
+                        ]}
+                      />
+                    </View>
+                  </View>
+                )}
+              </View>
+            ) : (
+              <View style={styles.proFeatures}>
+                <View style={styles.proFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                  <Text style={styles.proFeatureText}>Unlimited projects</Text>
+                </View>
+                <View style={styles.proFeatureRow}>
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.success} />
+                  <Text style={styles.proFeatureText}>Unlimited tracks</Text>
+                </View>
+                {/* Storage Usage for Pro */}
+                {storageStats && (
+                  <View style={[styles.usageRow, { marginTop: Spacing.sm }]}>
+                    <View style={styles.usageInfo}>
+                      <Text style={styles.usageLabel}>Storage ({storageStats.storageLimitFormatted})</Text>
+                      <Text style={styles.usageCount}>
+                        {storageStats.storageUsedFormatted} used
+                      </Text>
+                    </View>
+                    <View style={styles.usageBarContainer}>
+                      <View
+                        style={[
+                          styles.usageBarFill,
+                          {
+                            width: `${Math.min(100, storageStats.percentageUsed)}%`,
+                            backgroundColor: storageStats.isNearLimit
+                              ? Colors.warning
+                              : Colors.success
+                          }
+                        ]}
+                      />
+                    </View>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+        )}
 
         {/* Bio */}
         {userProfile?.bio ? (
@@ -425,51 +640,20 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
           ) : (
             <View style={styles.highlightsList}>
-              {highlights.map((highlight, index) => (
-                <View key={highlight.id} style={styles.highlightItem}>
-                  <HighlightPlayer
-                    fileUrl={highlight.file_url}
-                    fileName={highlight.file_name}
-                    duration={highlight.duration}
-                    bpm={highlight.bpm}
-                    keySignature={highlight.key}
-                  />
-                  <View style={styles.highlightControls}>
-                    {/* Reorder buttons */}
-                    <View style={styles.reorderButtons}>
-                      <TouchableOpacity
-                        style={[styles.reorderButton, index === 0 && styles.reorderButtonDisabled]}
-                        onPress={() => handleMoveHighlight(index, 'up')}
-                        disabled={index === 0}
-                      >
-                        <Ionicons
-                          name="chevron-up"
-                          size={18}
-                          color={index === 0 ? Colors.textTertiary : Colors.textSecondary}
-                        />
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[styles.reorderButton, index === highlights.length - 1 && styles.reorderButtonDisabled]}
-                        onPress={() => handleMoveHighlight(index, 'down')}
-                        disabled={index === highlights.length - 1}
-                      >
-                        <Ionicons
-                          name="chevron-down"
-                          size={18}
-                          color={index === highlights.length - 1 ? Colors.textTertiary : Colors.textSecondary}
-                        />
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Delete button */}
-                    <TouchableOpacity
-                      style={styles.deleteButton}
-                      onPress={() => handleDeleteHighlight(highlight.id)}
-                    >
-                      <Ionicons name="trash-outline" size={20} color={Colors.error} />
-                    </TouchableOpacity>
-                  </View>
-                </View>
+              {highlights.map((highlight) => (
+                <HighlightPlayer
+                  key={highlight.id}
+                  highlightId={highlight.id}
+                  profileUserId={user?.id || ''}
+                  fileUrl={highlight.file_url}
+                  fileName={highlight.file_name}
+                  duration={highlight.duration}
+                  bpm={highlight.bpm}
+                  keySignature={highlight.key}
+                  isOwner={true}
+                  isPro={subscriptionUsage?.tier === 'pro'}
+                  onDelete={() => handleDeleteHighlight(highlight.id)}
+                />
               ))}
             </View>
           )}
@@ -525,7 +709,7 @@ export default function ProfileScreen({ navigation }: any) {
               <Ionicons name="musical-notes-outline" size={48} color={Colors.textSecondary} />
               <Text style={styles.emptyStateTitle}>No Projects Yet</Text>
               <Text style={styles.emptyStateText}>
-                Create your first project to start collaborating
+                Create your first project to start kollaborating
               </Text>
               <TouchableOpacity
                 style={styles.createProjectButton}
@@ -563,6 +747,15 @@ export default function ProfileScreen({ navigation }: any) {
 
             <TouchableOpacity
               style={styles.actionButton}
+              onPress={() => navigation.navigate('PendingInvitations')}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="mail-outline" size={24} color={Colors.primary} />
+              <Text style={styles.actionButtonText}>Invitations</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionButton}
               onPress={() => navigation.navigate('BlockedUsers')}
               activeOpacity={0.7}
             >
@@ -581,9 +774,21 @@ export default function ProfileScreen({ navigation }: any) {
           </View>
         </View>
 
+        {/* Sign Out Button */}
+        <View style={styles.signOutSection}>
+          <TouchableOpacity
+            style={styles.signOutButton}
+            onPress={handleSignOut}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="log-out-outline" size={24} color={Colors.error} />
+            <Text style={styles.signOutButtonText}>Sign Out</Text>
+          </TouchableOpacity>
+        </View>
+
         <View style={styles.bottomSpacer} />
       </ScrollView>
-    </SafeAreaView>
+    </>
   )
 }
 
@@ -868,37 +1073,6 @@ const styles = StyleSheet.create({
   highlightsList: {
     gap: Spacing.md,
   },
-  highlightItem: {
-    gap: Spacing.xs,
-  },
-  highlightControls: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: Spacing.sm,
-    paddingVertical: Spacing.xs,
-  },
-  reorderButtons: {
-    flexDirection: 'row',
-    gap: Spacing.xs,
-  },
-  reorderButton: {
-    padding: Spacing.xs,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.sm,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  reorderButtonDisabled: {
-    opacity: 0.3,
-  },
-  deleteButton: {
-    padding: Spacing.xs,
-    backgroundColor: Colors.surface,
-    borderRadius: BorderRadius.sm,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
   addHighlightButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -916,5 +1090,124 @@ const styles = StyleSheet.create({
     ...Typography.bodyLarge,
     color: Colors.primary,
     fontWeight: '600',
+  },
+  signOutSection: {
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.md,
+    backgroundColor: Colors.backgroundDark,
+    marginTop: Spacing.md,
+  },
+  signOutButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.sm,
+    backgroundColor: Colors.surface,
+    paddingVertical: Spacing.lg,
+    paddingHorizontal: Spacing.xl,
+    borderRadius: BorderRadius.lg,
+    borderWidth: 2,
+    borderColor: 'rgba(220, 53, 69, 0.4)',
+    marginHorizontal: 86, // 70px nav pill + 16px gap
+  },
+  signOutButtonText: {
+    ...Typography.h3,
+    color: Colors.error,
+    fontWeight: '700',
+  },
+
+  // Subscription Usage Card Styles
+  subscriptionCard: {
+    margin: Spacing.md,
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  subscriptionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  subscriptionTierBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  subscriptionTierText: {
+    ...Typography.bodyLarge,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+  subscriptionTierTextPro: {
+    color: Colors.warning,
+  },
+  upgradeButton: {
+    backgroundColor: Colors.primary,
+    paddingHorizontal: Spacing.md,
+    paddingVertical: Spacing.xs,
+    borderRadius: BorderRadius.sm,
+  },
+  upgradeButtonText: {
+    ...Typography.body,
+    color: Colors.text,
+    fontWeight: '600',
+  },
+  usageBars: {
+    gap: Spacing.md,
+  },
+  usageRow: {
+    gap: Spacing.xs,
+  },
+  usageInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  usageLabel: {
+    ...Typography.body,
+    color: Colors.text,
+  },
+  usageCount: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+  },
+  usageCountWarning: {
+    color: Colors.warning,
+  },
+  usageBarContainer: {
+    height: 6,
+    backgroundColor: Colors.border,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  usageBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  trackLimitInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+    marginTop: Spacing.xs,
+  },
+  trackLimitText: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+  },
+  proFeatures: {
+    gap: Spacing.sm,
+  },
+  proFeatureRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.sm,
+  },
+  proFeatureText: {
+    ...Typography.body,
+    color: Colors.text,
   },
 })

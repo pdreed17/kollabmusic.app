@@ -1,18 +1,20 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Alert,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
+import { useAuth } from '../contexts/AuthContext'
+import { getUserUsageStats, SubscriptionTier as SubTier } from '../utils/subscriptionLimits'
 
-interface SubscriptionTier {
+interface PlanOption {
   id: string
   name: string
   price: number
@@ -23,62 +25,69 @@ interface SubscriptionTier {
 }
 
 export default function SubscriptionScreen({ navigation }: any) {
+  const { user } = useAuth()
   const [selectedTier, setSelectedTier] = useState<string>('free')
   const [billingPeriod, setBillingPeriod] = useState<'month' | 'year'>('month')
+  const [currentTier, setCurrentTier] = useState<SubTier>('free')
+  const [usage, setUsage] = useState<{ ownedProjects: number; activeCollabs: number } | null>(null)
 
-  const subscriptionTiers: SubscriptionTier[] = [
+  useEffect(() => {
+    if (user?.id) {
+      loadUsageStats()
+    }
+  }, [user?.id])
+
+  const loadUsageStats = async () => {
+    if (!user?.id) return
+    const stats = await getUserUsageStats(user.id)
+    if (stats) {
+      setCurrentTier(stats.tier)
+      setUsage(stats.usage)
+    }
+  }
+
+  const subscriptionTiers: PlanOption[] = [
     {
       id: 'free',
       name: 'Free',
       price: 0,
       period: 'month',
-      currentPlan: true,
+      currentPlan: currentTier === 'free',
       features: [
-        '2 active projects',
-        '10 GB storage',
-        'Basic collaboration tools',
-        'Standard audio quality',
-        'Email support',
+        '3 owned projects',
+        'Collaborate on 3 projects',
+        '8 tracks per project',
+        '200 MB storage',
       ],
     },
     {
       id: 'pro',
       name: 'Pro',
-      price: billingPeriod === 'month' ? 25 : 250,
+      price: billingPeriod === 'month' ? 4.99 : 53.89,
       period: billingPeriod,
-      highlighted: true,
+      highlighted: currentTier === 'free',
+      currentPlan: currentTier === 'pro',
       features: [
-        'Unlimited projects',
-        '100 GB storage',
-        'Advanced collaboration tools',
-        'High-quality audio (96kHz)',
-        'Version history (30 days)',
-        'Priority support',
-        'DAW export templates',
-        'Real-time collaboration',
-      ],
-    },
-    {
-      id: 'team',
-      name: 'Team',
-      price: billingPeriod === 'month' ? 50 : 500,
-      period: billingPeriod,
-      features: [
-        'Everything in Pro',
-        'Unlimited team members',
-        '500 GB storage',
-        'Revenue split management',
-        'Advanced analytics',
-        'Custom branding',
-        'Dedicated account manager',
-        'Phone support',
+        'Unlimited owned projects',
+        'Unlimited collaborations',
+        'Unlimited tracks per project',
+        '5 GB storage',
       ],
     },
   ]
 
   const handleSubscribe = (tierId: string) => {
-    if (tierId === 'free') {
-      Alert.alert('Free Plan', 'You are already on the free plan')
+    if (tierId === currentTier) {
+      Alert.alert('Current Plan', `You are already on the ${tierId === 'free' ? 'Free' : 'Pro'} plan`)
+      return
+    }
+
+    if (tierId === 'free' && currentTier === 'pro') {
+      Alert.alert(
+        'Downgrade',
+        'To downgrade to Free, please manage your subscription in Settings.',
+        [{ text: 'OK' }]
+      )
       return
     }
 
@@ -103,7 +112,7 @@ export default function SubscriptionScreen({ navigation }: any) {
     // TODO: Open Stripe customer portal
   }
 
-  const renderTier = (tier: SubscriptionTier) => {
+  const renderTier = (tier: PlanOption) => {
     const isSelected = selectedTier === tier.id
     const savings = tier.period === 'year' ? Math.round((1 - tier.price / (tier.price / 12 * 12)) * 100) : 0
 
@@ -139,7 +148,7 @@ export default function SubscriptionScreen({ navigation }: any) {
         </View>
 
         {tier.period === 'year' && tier.price > 0 && (
-          <Text style={styles.savings}>Save 17% annually</Text>
+          <Text style={styles.savings}>Save 10% annually</Text>
         )}
 
         <View style={styles.featuresContainer}>
@@ -177,15 +186,31 @@ export default function SubscriptionScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Subscription"
         subtitle={currentPlan ? `${currentPlan.name} Plan` : 'Manage Your Plan'}
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {/* Usage Stats (Free tier only) */}
+        {currentTier === 'free' && usage && (
+          <View style={styles.usageSection}>
+            <Text style={styles.usageTitle}>Your Usage</Text>
+            <View style={styles.usageRow}>
+              <View style={styles.usageItem}>
+                <Text style={styles.usageValue}>{usage.ownedProjects}/3</Text>
+                <Text style={styles.usageLabel}>Projects</Text>
+              </View>
+              <View style={styles.usageDivider} />
+              <View style={styles.usageItem}>
+                <Text style={styles.usageValue}>{usage.activeCollabs}/3</Text>
+                <Text style={styles.usageLabel}>Collaborations</Text>
+              </View>
+            </View>
+          </View>
+        )}
+
         {/* Billing Period Toggle */}
         <View style={styles.periodToggle}>
           <TouchableOpacity
@@ -220,7 +245,7 @@ export default function SubscriptionScreen({ navigation }: any) {
               Yearly
             </Text>
             <View style={styles.saveBadge}>
-              <Text style={styles.saveText}>SAVE 17%</Text>
+              <Text style={styles.saveText}>SAVE 10%</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -455,5 +480,44 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: Spacing.xxxl,
+  },
+  usageSection: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.lg,
+    marginBottom: Spacing.lg,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  usageTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.md,
+    textAlign: 'center',
+  },
+  usageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  usageItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  usageValue: {
+    ...Typography.h1,
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  usageLabel: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    marginTop: Spacing.xxs,
+  },
+  usageDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: Colors.border,
+    marginHorizontal: Spacing.lg,
   },
 })

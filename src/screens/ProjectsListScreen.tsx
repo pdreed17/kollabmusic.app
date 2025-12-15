@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   View,
   Text,
@@ -7,18 +7,20 @@ import {
   FlatList,
   ActivityIndicator,
   RefreshControl,
-  SafeAreaView,
+  Animated,
   Alert,
   TextInput,
   ScrollView,
 } from 'react-native'
+import { useFocusEffect } from '@react-navigation/native'
 import { Ionicons } from '@expo/vector-icons'
+import Swipeable from 'react-native-gesture-handler/Swipeable'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
 import ProjectIcon from '../components/ProjectIcon'
-import Header from '../components/Header'
 import { getAllBlockedUserIds } from '../utils/blockingHelpers'
+import { scale } from '../utils/responsive'
 
 export default function ProjectsListScreen({ navigation }: any) {
   const { user, userProfile } = useAuth()
@@ -41,6 +43,15 @@ export default function ProjectsListScreen({ navigation }: any) {
     }
   }, [blockedUserIds])
 
+  // Reload projects when screen comes into focus (e.g., after editing a project)
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id && blockedUserIds.length >= 0) {
+        loadProjects()
+      }
+    }, [user?.id, blockedUserIds])
+  )
+
   const loadBlockedUsers = async () => {
     if (!user?.id) return
     const blocked = await getAllBlockedUserIds(user.id)
@@ -54,12 +65,28 @@ export default function ProjectsListScreen({ navigation }: any) {
         return
       }
 
+      // DIAGNOSTIC: Log user ID
+      console.log('===== PROJECT LOADING DIAGNOSTICS =====')
+      console.log('User ID from context:', user.id)
+      console.log('User email:', user.email)
+
       // Get user's own projects
       const { data: myProjects, error: myError } = await supabase
         .from('projects')
         .select('*')
         .eq('creator_id', user.id)
         .order('updated_at', { ascending: false })
+
+      // DIAGNOSTIC: Log query results
+      console.log('My projects query result:', {
+        count: myProjects?.length || 0,
+        error: myError?.message || null,
+        projects: myProjects?.map(p => ({
+          id: p.id,
+          title: p.title,
+          creator_id: p.creator_id
+        })) || []
+      })
 
       if (myError) {
         console.error('Error loading my projects:', myError)
@@ -68,11 +95,18 @@ export default function ProjectsListScreen({ navigation }: any) {
 
       // Get projects where user is a collaborator
       const { data: collaborations, error: collabError } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .select('project_id')
         .eq('user_id', user.id)
         .eq('invitation_status', 'accepted')
         .neq('role', 'owner')
+
+      // DIAGNOSTIC: Log collaborator query results
+      console.log('Collaborations query result:', {
+        count: collaborations?.length || 0,
+        error: collabError?.message || null,
+        projectIds: collaborations?.map(c => c.project_id) || []
+      })
 
       let joinedProjects: any[] = []
       if (!collabError && collaborations && collaborations.length > 0) {
@@ -106,7 +140,15 @@ export default function ProjectsListScreen({ navigation }: any) {
         return timeB - timeA
       })
 
-      console.log('Projects loaded:', allProjects.length)
+      // DIAGNOSTIC: Log final results
+      console.log('FINAL: Total projects loaded:', allProjects.length)
+      console.log('FINAL: Projects summary:', allProjects.map(p => ({
+        id: p.id.substring(0, 8),
+        title: p.title,
+        creator_id: p.creator_id?.substring(0, 8) || 'null'
+      })))
+      console.log('======================================')
+
       setProjects(allProjects)
     } catch (error: any) {
       console.error('Error loading projects:', error)
@@ -122,141 +164,156 @@ export default function ProjectsListScreen({ navigation }: any) {
     loadBlockedUsers()
   }
 
-  // Filter projects
-  const filteredProjects = projects.filter(p => {
-    // Search filter
-    const matchesSearch = searchQuery.length === 0 ||
-      p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.genre?.toLowerCase().includes(searchQuery.toLowerCase())
+  // Filter projects (memoized for performance)
+  const filteredProjects = useMemo(() => {
+    return projects.filter(p => {
+      // Search filter
+      const matchesSearch = searchQuery.length === 0 ||
+        p.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.genre?.toLowerCase().includes(searchQuery.toLowerCase())
 
-    // Ownership filter
-    const isMyProject = p.creator_id === user?.id
-    const matchesOwnership =
-      activeFilter === 'all' ||
-      (activeFilter === 'mine' && isMyProject) ||
-      (activeFilter === 'collaborating' && !isMyProject)
+      // Ownership filter
+      const isMyProject = p.creator_id === user?.id
+      const matchesOwnership =
+        activeFilter === 'all' ||
+        (activeFilter === 'mine' && isMyProject) ||
+        (activeFilter === 'collaborating' && !isMyProject)
 
-    // Exclude deleted/archived from main view
-    const isActive = p.status !== 'deleted' && p.status !== 'archived'
+      // Exclude deleted/archived from main view
+      const isActive = p.status !== 'deleted' && p.status !== 'archived'
 
-    return matchesSearch && matchesOwnership && isActive
-  })
+      return matchesSearch && matchesOwnership && isActive
+    })
+  }, [projects, searchQuery, activeFilter, user?.id])
 
-  const myProjectsCount = projects.filter(p => p.creator_id === user?.id && p.status !== 'deleted').length
-  const collaboratingCount = projects.filter(p => p.creator_id !== user?.id && p.status !== 'deleted').length
-  const totalActive = myProjectsCount + collaboratingCount
+  const { myProjectsCount, collaboratingCount, totalActive } = useMemo(() => {
+    const myCount = projects.filter(p => p.creator_id === user?.id && p.status !== 'deleted').length
+    const collabCount = projects.filter(p => p.creator_id !== user?.id && p.status !== 'deleted').length
+    return {
+      myProjectsCount: myCount,
+      collaboratingCount: collabCount,
+      totalActive: myCount + collabCount
+    }
+  }, [projects, user?.id])
 
-  const renderProject = ({ item }: any) => {
+  const renderRightActions = useCallback((progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>, projectId: string) => {
+    const trans = dragX.interpolate({
+      inputRange: [-80, 0],
+      outputRange: [0, 80],
+      extrapolate: 'clamp',
+    })
+
+    return (
+      <Animated.View style={[styles.swipeActions, { transform: [{ translateX: trans }] }]}>
+        <TouchableOpacity
+          style={styles.swipeEditButton}
+          onPress={() => navigation.navigate('EditProject', { projectId })}
+        >
+          <Ionicons name="create-outline" size={24} color={Colors.text} />
+          <Text style={styles.swipeActionText}>Edit</Text>
+        </TouchableOpacity>
+      </Animated.View>
+    )
+  }, [navigation])
+
+  const renderProject = useCallback(({ item }: any) => {
     const isMyProject = item.creator_id === user?.id
     const isArchived = item.status === 'archived'
     const isCompleted = item.status === 'completed'
 
+    const projectCard = (
+      <TouchableOpacity
+        style={[
+          styles.projectCard,
+          isArchived && styles.projectCardArchived
+        ]}
+        onPress={() => navigation.navigate('ProjectDetail', {
+          projectId: item.id
+        })}
+      >
+        <ProjectIcon size="medium" genre={item.genre} />
+
+        <View style={styles.projectContent}>
+          <View style={styles.projectHeader}>
+            <Text style={styles.projectTitle} numberOfLines={1}>
+              {item.title}
+            </Text>
+            {isArchived && (
+              <View style={styles.archivedBadge}>
+                <Ionicons name="archive" size={12} color={Colors.warning} />
+                <Text style={styles.archivedText}>Archived</Text>
+              </View>
+            )}
+            {isCompleted && (
+              <View style={styles.completedBadge}>
+                <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
+                <Text style={styles.completedText}>Done</Text>
+              </View>
+            )}
+            {item.genre && !isArchived && !isCompleted && (
+              <View style={styles.genreBadge}>
+                <Text style={styles.genreText}>{item.genre}</Text>
+              </View>
+            )}
+          </View>
+
+
+
+          {/* Meta Info */}
+          <View style={styles.projectMeta}>
+            {!isMyProject && (
+              <View style={styles.collaboratorBadge}>
+                <Ionicons name="people-outline" size={12} color={Colors.primary} />
+                <Text style={styles.collaboratorText}>Kollabs</Text>
+              </View>
+            )}
+            {item.bpm && (
+              <Text style={styles.metaText}>🎵 {item.bpm} BPM</Text>
+            )}
+            {item.key && (
+              <Text style={styles.metaText}>🎹 {item.key}</Text>
+            )}
+            <Text style={styles.metaText}>
+              {new Date(item.updated_at).toLocaleDateString()}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    )
+
+    // Only wrap in Swipeable if it's the user's project
+    if (isMyProject) {
+      return (
+        <View style={styles.projectCardWrapper}>
+          <Swipeable
+            renderRightActions={(progress, dragX) => renderRightActions(progress, dragX, item.id)}
+            overshootRight={false}
+            friction={2}
+          >
+            {projectCard}
+          </Swipeable>
+        </View>
+      )
+    }
+
     return (
       <View style={styles.projectCardWrapper}>
-        <TouchableOpacity
-          style={[
-            styles.projectCard,
-            isArchived && styles.projectCardArchived
-          ]}
-          onPress={() => navigation.navigate('ProjectDetail', { 
-            projectId: item.id
-          })}
-        >
-          <ProjectIcon size="medium" genre={item.genre} />
-          
-          <View style={styles.projectContent}>
-            <View style={styles.projectHeader}>
-              <Text style={styles.projectTitle} numberOfLines={1}>
-                {item.title}
-              </Text>
-              {isArchived && (
-                <View style={styles.archivedBadge}>
-                  <Ionicons name="archive" size={12} color={Colors.warning} />
-                  <Text style={styles.archivedText}>Archived</Text>
-                </View>
-              )}
-              {isCompleted && (
-                <View style={styles.completedBadge}>
-                  <Ionicons name="checkmark-circle" size={12} color={Colors.success} />
-                  <Text style={styles.completedText}>Done</Text>
-                </View>
-              )}
-              {item.genre && !isArchived && !isCompleted && (
-                <View style={styles.genreBadge}>
-                  <Text style={styles.genreText}>{item.genre}</Text>
-                </View>
-              )}
-            </View>
-            
-           
-            
-            {/* Meta Info */}
-            <View style={styles.projectMeta}>
-              {!isMyProject && (
-                <View style={styles.collaboratorBadge}>
-                  <Ionicons name="people-outline" size={12} color={Colors.primary} />
-                  <Text style={styles.collaboratorText}>Collaborating</Text>
-                </View>
-              )}
-              {item.bpm && (
-                <Text style={styles.metaText}>🎵 {item.bpm} BPM</Text>
-              )}
-              {item.key && (
-                <Text style={styles.metaText}>🎹 {item.key}</Text>
-              )}
-              <Text style={styles.metaText}>
-                {new Date(item.updated_at).toLocaleDateString()}
-              </Text>
-            </View>
-          </View>
-        </TouchableOpacity>
+        {projectCard}
+      </View>
+    )
+  }, [navigation, user?.id, renderRightActions])
 
-        {isMyProject && (
-          <TouchableOpacity
-            style={styles.editButton}
-            onPress={() => navigation.navigate('EditProject', { projectId: item.id })}
-          >
-            <Ionicons name="create-outline" size={20} color={Colors.primary} />
-          </TouchableOpacity>
-        )}
+  if (loading) {
+    return (
+      <View style={styles.centerContainer}>
+        <ActivityIndicator size="large" color={Colors.primary} />
       </View>
     )
   }
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Header
-          title="My Projects"
-          subtitle="Project List"
-          variant="compact"
-          showBack={true}
-          onBack={() => navigation.goBack()}
-          showProfile={true}
-          onProfilePress={() => navigation.navigate('Profile')}
-          profilePhotoUrl={userProfile?.avatar_url}
-        />
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={Colors.primary} />
-        </View>
-      </SafeAreaView>
-    )
-  }
-
   return (
-    <SafeAreaView style={styles.container}>
-      <Header
-        title="My Projects"
-        subtitle="Project List"
-        variant="compact"
-        showBack={true}
-        onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
-      />
-
+    <>
       {/* Search Section */}
       <View style={styles.searchSection}>
         <View style={styles.searchBar}>
@@ -313,7 +370,7 @@ export default function ProjectsListScreen({ navigation }: any) {
             activeOpacity={0.7}
           >
             <Text style={[styles.filterText, activeFilter === 'collaborating' && styles.filterTextActive]}>
-              Collaborating
+              Kollabs
             </Text>
             <Text style={[styles.filterCount, activeFilter === 'collaborating' && styles.filterCountActive]}>
               {collaboratingCount}
@@ -329,11 +386,26 @@ export default function ProjectsListScreen({ navigation }: any) {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
-          <RefreshControl 
-            refreshing={refreshing} 
+          <RefreshControl
+            refreshing={refreshing}
             onRefresh={onRefresh}
             tintColor={Colors.primary}
           />
+        }
+        removeClippedSubviews={true}
+        maxToRenderPerBatch={10}
+        windowSize={5}
+        initialNumToRender={10}
+        ListFooterComponent={
+          filteredProjects.length > 0 ? (
+            <TouchableOpacity
+              style={styles.addProjectButton}
+              onPress={() => navigation.navigate('CreateProject')}
+            >
+              <Ionicons name="add-circle-outline" size={24} color={Colors.primary} />
+              <Text style={styles.addProjectButtonText}>Create New Project</Text>
+            </TouchableOpacity>
+          ) : null
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
@@ -347,7 +419,7 @@ export default function ProjectsListScreen({ navigation }: any) {
                 : activeFilter === 'mine'
                 ? 'No Projects Yet'
                 : activeFilter === 'collaborating'
-                ? 'No Collaborations Yet'
+                ? 'No Kollabs Yet'
                 : 'No Projects Yet'
               }
             </Text>
@@ -356,10 +428,10 @@ export default function ProjectsListScreen({ navigation }: any) {
               {searchQuery.length > 0
                 ? `No projects match "${searchQuery}"`
                 : activeFilter === 'mine'
-                ? 'Create your first project to start collaborating'
+                ? 'Create your first project to start kollaborating'
                 : activeFilter === 'collaborating'
-                ? 'Join a project to start collaborating with others'
-                : 'Create a project or join collaborations'
+                ? 'Join a project to start kollaborating with others'
+                : 'Create a project or join kollabs'
               }
             </Text>
 
@@ -383,16 +455,7 @@ export default function ProjectsListScreen({ navigation }: any) {
           </View>
         }
       />
-
-      {filteredProjects.length > 0 && (
-        <TouchableOpacity
-          style={styles.fab}
-          onPress={() => navigation.navigate('CreateProject')}
-        >
-          <Text style={styles.fabText}>+</Text>
-        </TouchableOpacity>
-      )}
-    </SafeAreaView>
+    </>
   )
 }
 
@@ -467,12 +530,9 @@ const styles = StyleSheet.create({
     paddingBottom: 100,
   },
   projectCardWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
     marginBottom: Spacing.md,
   },
   projectCard: {
-    flex: 1,
     flexDirection: 'row',
     backgroundColor: Colors.surface,
     borderWidth: 1,
@@ -569,14 +629,25 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     fontSize: 12,
   },
-  editButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: `${Colors.primary}08`,
-    justifyContent: 'center',
+  swipeActions: {
+    flexDirection: 'row',
     alignItems: 'center',
     marginLeft: Spacing.sm,
+  },
+  swipeEditButton: {
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: 80,
+    height: '100%',
+    borderRadius: BorderRadius.lg,
+    gap: 4,
+  },
+  swipeActionText: {
+    ...Typography.caption,
+    color: Colors.text,
+    fontWeight: '600',
+    fontSize: 12,
   },
   emptyContainer: {
     flex: 1,
@@ -624,25 +695,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.text,
   },
-  fab: {
-    position: 'absolute',
-    bottom: Spacing.xl,
-    right: Spacing.xl,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: Colors.primary,
-    justifyContent: 'center',
+  addProjectButton: {
+    flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 8,
+    justifyContent: 'center',
+    gap: Spacing.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 2,
+    borderColor: Colors.primary,
+    borderStyle: 'dashed',
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    marginTop: Spacing.sm,
+    marginHorizontal: scale(64),
   },
-  fabText: {
-    color: Colors.text,
-    fontSize: 32,
-    fontWeight: '300',
+  addProjectButtonText: {
+    ...Typography.bodyLarge,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 })

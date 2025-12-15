@@ -60,7 +60,7 @@ export async function storeAudioEmbedding(
     });
 
     if (error) {
-      console.error('Error storing embedding:', error);
+      if (__DEV__) console.error('Error storing embedding:', error);
       return { success: false, error: error.message };
     }
 
@@ -69,7 +69,7 @@ export async function storeAudioEmbedding(
       embedding_id: data.embedding_id,
     };
   } catch (error: any) {
-    console.error('storeAudioEmbedding error:', error);
+    if (__DEV__) console.error('storeAudioEmbedding error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -98,7 +98,7 @@ export async function searchSimilarAudio(
     });
 
     if (error) {
-      console.error('Error searching similar audio:', error);
+      if (__DEV__) console.error('Error searching similar audio:', error);
       return { success: false, error: error.message };
     }
 
@@ -107,7 +107,7 @@ export async function searchSimilarAudio(
       results: data.results,
     };
   } catch (error: any) {
-    console.error('searchSimilarAudio error:', error);
+    if (__DEV__) console.error('searchSimilarAudio error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -124,7 +124,7 @@ export async function getEmbeddingById(
     });
 
     if (error) {
-      console.error('Error fetching embedding:', error);
+      if (__DEV__) console.error('Error fetching embedding:', error);
       return { success: false, error: error.message };
     }
 
@@ -133,7 +133,7 @@ export async function getEmbeddingById(
       embedding: data.embedding,
     };
   } catch (error: any) {
-    console.error('getEmbeddingById error:', error);
+    if (__DEV__) console.error('getEmbeddingById error:', error);
     return { success: false, error: error.message };
   }
 }
@@ -187,7 +187,7 @@ export async function analyzeAndFindSimilar(
       results: searchResult.results,
     };
   } catch (error: any) {
-    console.error('analyzeAndFindSimilar error:', error);
+    if (__DEV__) console.error('analyzeAndFindSimilar error:', error);
     return { success: false, error: error.message };
   }
 }

@@ -1,18 +1,23 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   TouchableOpacity,
   Alert,
   Switch,
+  Image,
+  Linking,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
+import { usePreferences } from '../contexts/PreferencesContext'
+import { supabase } from '../lib/supabase'
+import { authService } from '../services/auth.service'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 
 interface SettingItem {
   id: string
@@ -28,33 +33,46 @@ interface SettingItem {
 }
 
 export default function SettingsScreen({ navigation }: any) {
-  const { user, signOut } = useAuth()
+  const { user, userProfile } = useAuth()
+  const { handedness, setHandedness } = usePreferences()
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
-  const [emailNotifications, setEmailNotifications] = useState(true)
-  const [autoDownload, setAutoDownload] = useState(false)
-  const [highQualityPlayback, setHighQualityPlayback] = useState(true)
+  const [loading, setLoading] = useState(false)
 
-  const handleSignOut = () => {
-    Alert.alert(
-      'Sign Out',
-      'Are you sure you want to sign out?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Sign Out',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await signOut()
-              // Navigation will automatically switch to Login screen when user is cleared
-            } catch (error) {
-              console.error('Sign out error:', error)
-              Alert.alert('Error', 'Failed to sign out. Please try again.')
-            }
-          },
-        },
-      ]
-    )
+  // Load settings from database on mount
+  useEffect(() => {
+    if (userProfile?.settings) {
+      setNotificationsEnabled(userProfile.settings.notifications_enabled ?? true)
+    }
+  }, [userProfile])
+
+  // Save setting to database
+  const saveSetting = async (key: string, value: boolean) => {
+    if (!user?.id) return
+
+    try {
+      // Get current settings or create empty object
+      const currentSettings = userProfile?.settings || {}
+
+      const { error } = await supabase
+        .from('users')
+        .update({
+          settings: {
+            ...currentSettings,
+            [key]: value
+          }
+        })
+        .eq('id', user.id)
+
+      if (error) throw error
+    } catch (error) {
+      console.error('Error saving setting:', error)
+      // Don't show alert to user, just log it
+    }
+  }
+
+  const handleNotificationsToggle = async (value: boolean) => {
+    setNotificationsEnabled(value)
+    await saveSetting('notifications_enabled', value)
   }
 
   const handleDeleteAccount = () => {
@@ -66,34 +84,42 @@ export default function SettingsScreen({ navigation }: any) {
         {
           text: 'Delete Account',
           style: 'destructive',
-          onPress: () => {
-            // TODO: Implement account deletion
-            Alert.alert(
-              'Coming Soon',
-              'Account deletion will be available soon. Please contact support@kollabapp.com for assistance.'
-            )
+          onPress: async () => {
+            try {
+              setLoading(true)
+
+              const { error } = await authService.deleteAccount()
+
+              if (error) {
+                console.error('[Settings] Delete account error:', error)
+                Alert.alert(
+                  'Error',
+                  'Failed to delete account. Please try again or contact support.'
+                )
+                setLoading(false)
+              } else {
+                // Success - user is signed out automatically by authService
+                // AuthContext will handle navigation to login screen
+                Alert.alert(
+                  'Account Deleted',
+                  'Your account has been permanently deleted.',
+                  [{ text: 'OK' }]
+                )
+              }
+            } catch (error) {
+              console.error('[Settings] Delete account exception:', error)
+              Alert.alert(
+                'Error',
+                'An unexpected error occurred. Please try again.'
+              )
+              setLoading(false)
+            }
           },
         },
       ]
     )
   }
 
-  const handleExportData = () => {
-    Alert.alert(
-      'Export Data',
-      'Your data export will be prepared and emailed to you within 24 hours.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Request Export',
-          onPress: () => {
-            // TODO: Implement data export
-            Alert.alert('Success', 'Data export requested. You will receive an email shortly.')
-          },
-        },
-      ]
-    )
-  }
 
   const accountSettings: SettingItem[] = [
     {
@@ -132,56 +158,7 @@ export default function SettingsScreen({ navigation }: any) {
       icon: 'notifications-outline',
       type: 'toggle',
       value: notificationsEnabled,
-      onToggle: setNotificationsEnabled,
-    },
-    {
-      id: 'email-notifications',
-      title: 'Email Notifications',
-      subtitle: 'Receive updates via email',
-      icon: 'mail-outline',
-      type: 'toggle',
-      value: emailNotifications,
-      onToggle: setEmailNotifications,
-    },
-  ]
-
-  const audioSettings: SettingItem[] = [
-    {
-      id: 'audio-quality',
-      title: 'Audio Quality',
-      subtitle: 'Upload and playback quality',
-      icon: 'musical-note-outline',
-      type: 'navigation',
-      onPress: () => {
-        Alert.alert(
-          'Audio Quality',
-          'Choose your preferred audio quality settings',
-          [
-            { text: 'Low (Faster)', onPress: () => {} },
-            { text: 'Medium (Balanced)', onPress: () => {} },
-            { text: 'High (Best Quality)', onPress: () => {} },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        )
-      },
-    },
-    {
-      id: 'high-quality-playback',
-      title: 'High Quality Playback',
-      subtitle: 'Use maximum quality for playback',
-      icon: 'headset-outline',
-      type: 'toggle',
-      value: highQualityPlayback,
-      onToggle: setHighQualityPlayback,
-    },
-    {
-      id: 'auto-download',
-      title: 'Auto-Download Stems',
-      subtitle: 'Automatically cache stems for offline use',
-      icon: 'download-outline',
-      type: 'toggle',
-      value: autoDownload,
-      onToggle: setAutoDownload,
+      onToggle: handleNotificationsToggle,
     },
   ]
 
@@ -204,6 +181,33 @@ export default function SettingsScreen({ navigation }: any) {
     },
   ]
 
+  const handleSendFeedback = () => {
+    Linking.openURL('mailto:feedback@kollabmusic.app?subject=Kollab Feedback')
+  }
+
+  const handleContactSupport = () => {
+    Linking.openURL('mailto:support@kollabmusic.app?subject=Kollab Support Request')
+  }
+
+  const supportSettings: SettingItem[] = [
+    {
+      id: 'send-feedback',
+      title: 'Send Feedback',
+      subtitle: 'Help us improve Kollab',
+      icon: 'chatbubble-outline',
+      type: 'action',
+      onPress: handleSendFeedback,
+    },
+    {
+      id: 'contact-support',
+      title: 'Contact Support',
+      subtitle: 'Get help with your account',
+      icon: 'help-circle-outline',
+      type: 'action',
+      onPress: handleContactSupport,
+    },
+  ]
+
   const privacySettings: SettingItem[] = [
     {
       id: 'privacy-policy',
@@ -219,25 +223,9 @@ export default function SettingsScreen({ navigation }: any) {
       type: 'navigation',
       onPress: () => navigation.navigate('TermsOfService'),
     },
-    {
-      id: 'export-data',
-      title: 'Export My Data',
-      subtitle: 'Request a copy of your data',
-      icon: 'cloud-download-outline',
-      type: 'action',
-      onPress: handleExportData,
-    },
   ]
 
   const dangerZone: SettingItem[] = [
-    {
-      id: 'sign-out',
-      title: 'Sign Out',
-      icon: 'log-out-outline',
-      type: 'action',
-      onPress: handleSignOut,
-      destructive: true,
-    },
     {
       id: 'delete-account',
       title: 'Delete Account',
@@ -300,6 +288,76 @@ export default function SettingsScreen({ navigation }: any) {
     )
   }
 
+  const renderHandednessSection = () => (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>Navigation</Text>
+      <View style={styles.sectionCard}>
+        <View style={styles.settingRow}>
+          <View style={styles.settingIcon}>
+            <Ionicons name="hand-left-outline" size={24} color={Colors.textSecondary} />
+          </View>
+          <View style={styles.settingContent}>
+            <Text style={styles.settingTitle}>Hand Preference</Text>
+            <Text style={styles.settingSubtitle}>Choose which hand you hold your phone with</Text>
+          </View>
+        </View>
+        <View style={styles.divider} />
+        <View style={styles.handednessOptions}>
+          <TouchableOpacity
+            style={[
+              styles.handednessOption,
+              handedness === 'left' && styles.handednessOptionActive,
+            ]}
+            onPress={() => setHandedness('left')}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={handedness === 'left' ? 'radio-button-on' : 'radio-button-off'}
+              size={24}
+              color={handedness === 'left' ? Colors.primary : Colors.textSecondary}
+            />
+            <View style={styles.handednessOptionContent}>
+              <Text
+                style={[
+                  styles.handednessOptionTitle,
+                  handedness === 'left' && styles.handednessOptionTitleActive,
+                ]}
+              >
+                Left Hand
+              </Text>
+              <Text style={styles.handednessOptionSubtitle}>Nav on left, back on right</Text>
+            </View>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.handednessOption,
+              handedness === 'right' && styles.handednessOptionActive,
+            ]}
+            onPress={() => setHandedness('right')}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={handedness === 'right' ? 'radio-button-on' : 'radio-button-off'}
+              size={24}
+              color={handedness === 'right' ? Colors.primary : Colors.textSecondary}
+            />
+            <View style={styles.handednessOptionContent}>
+              <Text
+                style={[
+                  styles.handednessOptionTitle,
+                  handedness === 'right' && styles.handednessOptionTitleActive,
+                ]}
+              >
+                Right Hand
+              </Text>
+              <Text style={styles.handednessOptionSubtitle}>Nav on right, back on left</Text>
+            </View>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </View>
+  )
+
   const renderSection = (title: string, items: SettingItem[]) => (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -316,30 +374,38 @@ export default function SettingsScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="Settings"
         subtitle="Preferences"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* User Info */}
         <View style={styles.userSection}>
-          <View style={styles.userAvatar}>
-            <Ionicons name="person" size={32} color={Colors.text} />
-          </View>
+          {userProfile?.avatar_url ? (
+            <Image
+              source={{ uri: userProfile.avatar_url }}
+              style={styles.userAvatarImage}
+            />
+          ) : (
+            <View style={styles.userAvatar}>
+              <Ionicons name="person" size={32} color={Colors.text} />
+            </View>
+          )}
           <View style={styles.userInfo}>
-            <Text style={styles.userName}>{user?.email}</Text>
-            <Text style={styles.userEmail}>Free Plan</Text>
+            <Text style={styles.userName}>
+              {userProfile?.display_name || userProfile?.username || user?.email}
+            </Text>
+            <Text style={styles.userEmail}>{user?.email}</Text>
           </View>
         </View>
 
         {renderSection('Account', accountSettings)}
+        {renderHandednessSection()}
         {renderSection('Notifications', notificationSettings)}
-        {renderSection('Audio Settings', audioSettings)}
         {renderSection('Subscription', subscriptionSettings)}
+        {renderSection('Support & Feedback', supportSettings)}
         {renderSection('Legal & Privacy', privacySettings)}
         {renderSection('Danger Zone', dangerZone)}
 
@@ -381,6 +447,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
+    marginRight: Spacing.md,
+  },
+  userAvatarImage: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     marginRight: Spacing.md,
   },
   userInfo: {
@@ -462,5 +534,39 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: Spacing.xxxl,
+  },
+  handednessOptions: {
+    padding: Spacing.md,
+    gap: Spacing.sm,
+  },
+  handednessOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: Spacing.md,
+    backgroundColor: Colors.surfaceElevated,
+    borderRadius: BorderRadius.md,
+    borderWidth: 2,
+    borderColor: 'transparent',
+  },
+  handednessOptionActive: {
+    borderColor: Colors.primary,
+    backgroundColor: `${Colors.primary}10`,
+  },
+  handednessOptionContent: {
+    marginLeft: Spacing.sm,
+    flex: 1,
+  },
+  handednessOptionTitle: {
+    ...Typography.bodyLarge,
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  handednessOptionTitleActive: {
+    fontWeight: '600',
+  },
+  handednessOptionSubtitle: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontSize: 11,
   },
 })

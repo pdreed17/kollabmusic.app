@@ -1,19 +1,20 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   ActivityIndicator,
   Alert,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
+import { useFocusEffect } from '@react-navigation/native'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
 import ProjectIcon from '../components/ProjectIcon'
 
 // Collaboration skills labels for display
@@ -47,21 +48,79 @@ interface NavigationProps {
 export default function ProjectDetailScreen({ route, navigation }: NavigationProps) {
   const { projectId } = route.params
   const { user, userProfile } = useAuth()
-  
+
   const [project, setProject] = useState<any>(null)
   const [collaborators, setCollaborators] = useState<any[]>([])
   const [audioFiles, setAudioFiles] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [isCollaborator, setIsCollaborator] = useState(false)
+  const [canUpload, setCanUpload] = useState(false)
 
   useEffect(() => {
-    loadProjectData()
-  }, [projectId])
+    if (projectId && user?.id) {
+      loadProjectData()
 
-  const loadProjectData = async () => {
+      // Set up real-time subscription for project updates
+      const projectChannel = supabase
+        .channel(`project-detail-${projectId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'projects',
+            filter: `id=eq.${projectId}`
+          },
+          () => {
+            loadProjectData()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'project_collaborators',
+            filter: `project_id=eq.${projectId}`
+          },
+          () => {
+            loadProjectData()
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'audio_files',
+            filter: `project_id=eq.${projectId}`
+          },
+          () => {
+            loadProjectData()
+          }
+        )
+        .subscribe()
+
+      return () => {
+        projectChannel.unsubscribe()
+      }
+    }
+  }, [projectId, user?.id])
+
+  // Reload data when screen comes into focus (handles navigation param changes)
+  useFocusEffect(
+    useCallback(() => {
+      if (projectId && user?.id) {
+        loadProjectData()
+      }
+    }, [projectId, user?.id])
+  )
+
+  const loadProjectData = useCallback(async () => {
     try {
       setLoading(true)
 
-      const { data: projectData, error: projectError } = await supabase
+      const { data: projectData, error: projectError} = await supabase
         .from('projects')
         .select('*, users!projects_creator_id_fkey(username, display_name)')
         .eq('id', projectId)
@@ -72,14 +131,67 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
         throw new Error('Failed to load project')
       }
 
+      // Check if user is the owner
+      const isOwner = projectData.creator_id === user?.id
+
+      // Check if user is a collaborator
+      let userIsCollaborator = isOwner
+      let userCanUpload = isOwner
+
+      if (!isOwner && user?.id) {
+        const { data: collabStatus } = await supabase
+          .from('project_collaborators')
+          .select('can_upload')
+          .eq('project_id', projectId)
+          .eq('user_id', user.id)
+          .eq('invitation_status', 'accepted')
+          .single()
+
+        if (collabStatus) {
+          userIsCollaborator = true
+          userCanUpload = collabStatus.can_upload
+        }
+      }
+
+      // If not public and not a collaborator, deny access
+      if (!projectData.is_public && !userIsCollaborator) {
+        Alert.alert('Access Denied', 'This project is private', [
+          { text: 'OK', onPress: () => navigation.goBack() }
+        ])
+        return
+      }
+
+      setIsCollaborator(userIsCollaborator)
+      setCanUpload(userCanUpload)
+
       const { data: collabData, error: collabError } = await supabase
         .from('project_collaborators')
         .select('*')
         .eq('project_id', projectId)
+        .eq('invitation_status', 'accepted')
         .neq('user_id', projectData.creator_id)
 
       if (collabError) {
         console.error('Collaborators error:', collabError)
+      }
+
+      // Fetch user data for each collaborator
+      if (collabData && collabData.length > 0) {
+        const userIds = collabData.map(c => c.user_id)
+        const { data: usersData } = await supabase
+          .from('users')
+          .select('id, username, display_name, avatar_url')
+          .in('id', userIds)
+
+        // Merge user data with collaborator data
+        if (usersData) {
+          collabData.forEach(collab => {
+            const user = usersData.find(u => u.id === collab.user_id)
+            if (user) {
+              collab.users = user
+            }
+          })
+        }
       }
 
       const { data: audioData, error: audioError } = await supabase
@@ -102,19 +214,19 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
     } finally {
       setLoading(false)
     }
-  }
+  }, [projectId, user?.id, navigation])
 
-  const formatDuration = (ms: number | null): string => {
+  const formatDuration = useCallback((ms: number | null): string => {
     if (!ms) return '--:--'
     const seconds = Math.floor(ms / 1000)
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
     return `${mins}:${secs.toString().padStart(2, '0')}`
-  }
+  }, [])
 
-  const getStemColor = (stemType: string | null): string => {
+  const getStemColor = useCallback((stemType: string | null): string => {
     if (!stemType) return Colors.textSecondary
-    
+
     const stemTypeLower = stemType.toLowerCase()
     const colors: { [key: string]: string } = {
       vocals: Colors.vocals,
@@ -125,30 +237,25 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
       synth: Colors.synth,
     }
     return colors[stemTypeLower] || Colors.textSecondary
-  }
+  }, [])
 
-  const getDisplayName = (userObj: any): string => {
+  const getDisplayName = useCallback((userObj: any): string => {
     if (!userObj) return 'Unknown User'
     return userObj.display_name || userObj.username || 'Unknown User'
-  }
+  }, [])
 
-  const getInitial = (userObj: any): string => {
+  const getInitial = useCallback((userObj: any): string => {
     const name = getDisplayName(userObj)
     return name.charAt(0).toUpperCase()
-  }
+  }, [getDisplayName])
 
   if (loading) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header
+        <CompactHeader
           title="Project"
           subtitle="Project Detail"
-          variant="compact"
-          showBack={true}
           onBack={() => navigation.goBack()}
-          showProfile={true}
-          onProfilePress={() => navigation.navigate('Profile')}
-          profilePhotoUrl={userProfile?.avatar_url}
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -160,15 +267,10 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
   if (!project) {
     return (
       <SafeAreaView style={styles.container}>
-        <Header
+        <CompactHeader
           title="Project"
           subtitle="Project Detail"
-          variant="compact"
-          showBack={true}
           onBack={() => navigation.goBack()}
-          showProfile={true}
-          onProfilePress={() => navigation.navigate('Profile')}
-          profilePhotoUrl={userProfile?.avatar_url}
         />
         <View style={styles.errorContainer}>
           <Ionicons name="alert-circle-outline" size={64} color={Colors.error} />
@@ -188,37 +290,30 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title={project.title}
         subtitle="Project Detail"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.projectHeader}>
-          <ProjectIcon size="large" genre={project.genre || undefined} />
-          
-          <View style={styles.projectInfo}>
-            <View style={styles.titleRow}>
-              <Text style={styles.projectTitle} numberOfLines={1}>
-                {project.title}
-              </Text>
-              {project.genre && (
-                <View style={styles.genreBadge}>
-                  <Text style={styles.genreText}>{project.genre}</Text>
-                </View>
-              )}
-            </View>
+          <View style={styles.titleRow}>
+            <ProjectIcon size="small" genre={project.genre || undefined} />
+            <Text style={styles.projectTitle} numberOfLines={1}>
+              {project.title}
+            </Text>
+            {project.genre && (
+              <View style={styles.genreBadge}>
+                <Text style={styles.genreText}>{project.genre}</Text>
+              </View>
+            )}
+          </View>
 
             <Text style={styles.projectCreator}>
               by {getDisplayName(project.users)}
             </Text>
-            
+
             <View style={styles.statusRow}>
               {project.status === 'archived' && (
                 <View style={styles.archivedBadge}>
@@ -230,12 +325,6 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
                 <View style={styles.completedBadge}>
                   <Ionicons name="checkmark-circle-outline" size={12} color={Colors.success} />
                   <Text style={styles.completedText} numberOfLines={1}>Completed</Text>
-                </View>
-              )}
-              {project.is_public && (
-                <View style={styles.publicBadge}>
-                  <Ionicons name="globe-outline" size={12} color={Colors.textSecondary} />
-                  <Text style={styles.publicText} numberOfLines={1}>Public</Text>
                 </View>
               )}
               {project.looking_for_collaborators && (
@@ -266,90 +355,110 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
                 )}
               </View>
             )}
-
-            {/* Collaboration Needs - Show if project is public or looking for collaborators */}
-            {(project.is_public || project.looking_for_collaborators) &&
-             project.collaboration_needs &&
-             project.collaboration_needs.length > 0 && (
-              <View style={styles.collaborationNeedsSection}>
-                <View style={styles.collaborationNeedsHeader}>
-                  <Ionicons name="people" size={18} color={Colors.primary} />
-                  <Text style={styles.collaborationNeedsTitle}>
-                    Looking for:
-                  </Text>
-                </View>
-                <View style={styles.collaborationNeedsChips}>
-                  {project.collaboration_needs.map((skillId: string) => {
-                    const skill = COLLABORATION_SKILLS_MAP[skillId]
-                    if (!skill) return null
-                    return (
-                      <View key={skillId} style={styles.needChip}>
-                        <Ionicons
-                          name={skill.icon as any}
-                          size={14}
-                          color={Colors.primary}
-                        />
-                        <Text style={styles.needChipText}>{skill.label}</Text>
-                      </View>
-                    )
-                  })}
-                </View>
-              </View>
-            )}
-          </View>
         </View>
+
+        {/* Collaboration Needs - Full width section */}
+        {(project.is_public || project.looking_for_collaborators) &&
+         project.collaboration_needs &&
+         project.collaboration_needs.length > 0 && (
+          <View style={styles.collaborationNeedsSection}>
+            <Text style={styles.collaborationNeedsTitle}>
+              Looking for:
+            </Text>
+            <View style={styles.collaborationNeedsChips}>
+              {project.collaboration_needs.map((skillId: string) => {
+                const skill = COLLABORATION_SKILLS_MAP[skillId]
+                if (!skill) return null
+                return (
+                  <View key={skillId} style={styles.needChip}>
+                    <Ionicons
+                      name={skill.icon as any}
+                      size={14}
+                      color={Colors.primary}
+                    />
+                    <Text style={styles.needChipText}>{skill.label}</Text>
+                  </View>
+                )
+              })}
+            </View>
+          </View>
+        )}
 
         <View style={styles.actionsSection}>
           <TouchableOpacity
             style={styles.primaryActionButton}
-            onPress={() => navigation.navigate('ProjectStudio', { 
+            onPress={() => navigation.navigate('ProjectStudio', {
               projectId: project.id,
-              projectTitle: project.title 
+              projectTitle: project.title
             })}
           >
             <Ionicons name="play-circle" size={24} color={Colors.text} />
             <Text style={styles.primaryActionText}>Open in Studio</Text>
           </TouchableOpacity>
 
-          <View style={styles.secondaryActions}>
-            <TouchableOpacity
-              style={styles.secondaryActionButton}
-              onPress={() => navigation.navigate('AudioUpload', { projectId: project.id })}
-            >
-              <Ionicons name="cloud-upload-outline" size={20} color={Colors.primary} />
-              <Text style={styles.secondaryActionText}>Upload</Text>
-            </TouchableOpacity>
-
-            {isOwner && (
-              <>
+          {/* Show action buttons only for collaborators */}
+          {isCollaborator && (
+            <View style={styles.secondaryActions}>
+              {canUpload && (
                 <TouchableOpacity
                   style={styles.secondaryActionButton}
-                  onPress={() => navigation.navigate('EditProject', { projectId: project.id })}
+                  onPress={() => navigation.navigate('AudioUpload', { projectId: project.id })}
                 >
-                  <Ionicons name="create-outline" size={20} color={Colors.primary} />
-                  <Text style={styles.secondaryActionText}>Edit</Text>
+                  <Ionicons name="cloud-upload-outline" size={20} color={Colors.primary} />
+                  <Text style={styles.secondaryActionText}>Upload</Text>
                 </TouchableOpacity>
+              )}
 
-                <TouchableOpacity
-                  style={styles.secondaryActionButton}
-                  onPress={() => navigation.navigate('InviteCollaborator', { projectId: project.id })}
-                >
-                  <Ionicons name="person-add-outline" size={20} color={Colors.primary} />
-                  <Text style={styles.secondaryActionText}>Invite</Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
+              {isOwner && (
+                <>
+                  <TouchableOpacity
+                    style={styles.secondaryActionButton}
+                    onPress={() => navigation.navigate('EditProject', { projectId: project.id })}
+                  >
+                    <Ionicons name="create-outline" size={20} color={Colors.primary} />
+                    <Text style={styles.secondaryActionText}>Edit</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.secondaryActionButton}
+                    onPress={() => navigation.navigate('InviteCollaborator', { projectId: project.id })}
+                  >
+                    <Ionicons name="person-add-outline" size={20} color={Colors.primary} />
+                    <Text style={styles.secondaryActionText}>Invite</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          )}
+
+          {/* Show helpful message for public viewers */}
+          {!isCollaborator && project.is_public && project.looking_for_collaborators && (
+            <View style={styles.publicViewerHint}>
+              <Ionicons name="information-circle-outline" size={16} color={Colors.info} />
+              <Text style={styles.publicViewerHintText}>
+                This is a public project. Interested in collaborating? Reach out to the owner!
+              </Text>
+            </View>
+          )}
         </View>
 
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Collaborators</Text>
+            <Text style={styles.sectionTitle}>Kollaborators</Text>
+            {project.is_public && (
+              <View style={styles.publicBadgeInline}>
+                <Ionicons name="globe-outline" size={10} color={Colors.textSecondary} />
+                <Text style={styles.publicTextInline}>Public</Text>
+              </View>
+            )}
             <Text style={styles.sectionCount}>{collaborators.length + 1}</Text>
           </View>
 
           <View style={styles.collaboratorsList}>
-            <View style={styles.collaboratorCard}>
+            <TouchableOpacity
+              style={styles.collaboratorCard}
+              onPress={() => navigation.navigate('UserProfile', { userId: project.creator_id })}
+            >
               <View style={styles.collaboratorAvatar}>
                 <Text style={styles.collaboratorAvatarText}>
                   {getInitial(project.users)}
@@ -364,10 +473,14 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
               <View style={styles.ownerBadge}>
                 <Ionicons name="star" size={14} color={Colors.warning} />
               </View>
-            </View>
+            </TouchableOpacity>
 
             {collaborators.map((collab) => (
-              <View key={collab.id} style={styles.collaboratorCard}>
+              <TouchableOpacity
+                key={collab.id}
+                style={styles.collaboratorCard}
+                onPress={() => navigation.navigate('UserProfile', { userId: collab.user_id })}
+              >
                 <View style={styles.collaboratorAvatar}>
                   <Text style={styles.collaboratorAvatarText}>
                     {getInitial(collab.users)}
@@ -379,7 +492,7 @@ export default function ProjectDetailScreen({ route, navigation }: NavigationPro
                   </Text>
                   <Text style={styles.collaboratorRole}>{collab.role}</Text>
                 </View>
-              </View>
+              </TouchableOpacity>
             ))}
           </View>
         </View>
@@ -428,15 +541,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   projectHeader: {
-    flexDirection: 'row',
     padding: Spacing.lg,
     backgroundColor: Colors.surface,
-    gap: Spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: Colors.border,
-  },
-  projectInfo: {
-    flex: 1,
   },
   titleRow: {
     flexDirection: 'row',
@@ -464,6 +572,7 @@ const styles = StyleSheet.create({
     ...Typography.body,
     color: Colors.textSecondary,
     marginBottom: Spacing.xs,
+    marginLeft: 36 + Spacing.xs, // Icon width (36) + gap
   },
   statusRow: {
     flexDirection: 'row',
@@ -553,23 +662,17 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
   },
   collaborationNeedsSection: {
-    marginTop: Spacing.md,
-    padding: Spacing.md,
-    backgroundColor: `${Colors.primary}08`,
-    borderRadius: BorderRadius.md,
-    borderWidth: 1,
-    borderColor: `${Colors.primary}20`,
-  },
-  collaborationNeedsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.xs,
-    marginBottom: Spacing.sm,
+    padding: Spacing.lg,
+    backgroundColor: Colors.surface,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: Colors.border,
   },
   collaborationNeedsTitle: {
     ...Typography.bodyLarge,
     color: Colors.primary,
     fontWeight: '600',
+    marginBottom: Spacing.sm,
   },
   collaborationNeedsChips: {
     flexDirection: 'row',
@@ -641,18 +744,34 @@ const styles = StyleSheet.create({
   },
   sectionHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: Spacing.sm,
     marginBottom: Spacing.md,
   },
   sectionTitle: {
     ...Typography.h3,
     color: Colors.text,
   },
+  publicBadgeInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surfaceElevated,
+    paddingHorizontal: Spacing.xs,
+    paddingVertical: 2,
+    borderRadius: BorderRadius.sm,
+    gap: 3,
+  },
+  publicTextInline: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontWeight: '600',
+    fontSize: 10,
+  },
   sectionCount: {
     ...Typography.body,
     color: Colors.textSecondary,
     fontWeight: '600',
+    marginLeft: 'auto',
   },
   emptyState: {
     alignItems: 'center',
@@ -761,5 +880,22 @@ const styles = StyleSheet.create({
     backgroundColor: `${Colors.warning}20`,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  publicViewerHint: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: `${Colors.info}15`,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    marginTop: Spacing.sm,
+    gap: Spacing.sm,
+    borderWidth: 1,
+    borderColor: `${Colors.info}30`,
+  },
+  publicViewerHintText: {
+    ...Typography.body,
+    color: Colors.textSecondary,
+    flex: 1,
+    lineHeight: 20,
   },
 })

@@ -19,7 +19,7 @@ export interface BPMResult {
  */
 export async function detectBPM(fileUri: string): Promise<number> {
   try {
-    console.log('Starting BPM detection for:', fileUri);
+    if (__DEV__) console.log('Starting BPM detection for:', fileUri);
 
     // Decode audio to PCM
     const audioBuffer = await decodeAudioFile(fileUri);
@@ -40,16 +40,16 @@ export async function detectBPM(fileUri: string): Promise<number> {
     // Try autocorrelation-based BPM detection
     try {
       const result = await detectBPMAutocorrelation(resampledData, targetSampleRate);
-      console.log(`BPM detected: ${result.bpm} (confidence: ${result.confidence.toFixed(2)}, method: ${result.method})`);
+      if (__DEV__) console.log(`BPM detected: ${result.bpm} (confidence: ${result.confidence.toFixed(2)}, method: ${result.method})`);
       return Math.round(result.bpm);
     } catch (error) {
-      console.warn('Autocorrelation failed, trying energy-based detection:', error);
+      if (__DEV__) console.warn('Autocorrelation failed, trying energy-based detection:', error);
       const result = await detectBPMEnergyBased(resampledData, targetSampleRate);
-      console.log(`BPM detected: ${result.bpm} (method: ${result.method})`);
+      if (__DEV__) console.log(`BPM detected: ${result.bpm} (method: ${result.method})`);
       return Math.round(result.bpm);
     }
   } catch (error) {
-    console.error('BPM detection error:', error);
+    if (__DEV__) console.error('BPM detection error:', error);
     throw new Error(`Failed to detect BPM: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -296,7 +296,7 @@ export async function detectBPMDetailed(fileUri: string): Promise<BPMResult> {
       return await detectBPMEnergyBased(resampledData, targetSampleRate);
     }
   } catch (error) {
-    console.error('BPM detection error:', error);
+    if (__DEV__) console.error('BPM detection error:', error);
     throw error;
   }
 }

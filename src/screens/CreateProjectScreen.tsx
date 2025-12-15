@@ -5,18 +5,19 @@ import {
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   ScrollView,
   Alert,
   KeyboardAvoidingView,
   Platform,
   Switch,
 } from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 import { Ionicons } from '@expo/vector-icons'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
-import Header from '../components/Header'
+import CompactHeader from '../components/CompactHeader'
+import { canCreateProject, showUpgradeAlert } from '../utils/subscriptionLimits'
 
 export default function CreateProjectScreen({ navigation }: any) {
   const { user, userProfile } = useAuth()
@@ -41,6 +42,13 @@ export default function CreateProjectScreen({ navigation }: any) {
       return
     }
 
+    // Check subscription limits
+    const limitCheck = await canCreateProject(user.id)
+    if (!limitCheck.allowed) {
+      showUpgradeAlert(limitCheck.reason || 'Unable to create project', navigation)
+      return
+    }
+
     setCreating(true)
 
     try {
@@ -55,7 +63,6 @@ export default function CreateProjectScreen({ navigation }: any) {
           key: key.trim() || null,
           is_public: isPublic,
           looking_for_collaborators: lookingForCollaborators,
-          status: 'active',
         })
         .select()
         .single()
@@ -64,7 +71,7 @@ export default function CreateProjectScreen({ navigation }: any) {
 
       // Add creator as owner collaborator
       const { error: collabError } = await supabase
-        .from('collaborators')
+        .from('project_collaborators')
         .insert({
           project_id: project.id,
           user_id: user.id,
@@ -96,14 +103,9 @@ export default function CreateProjectScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header
+      <CompactHeader
         title="New Project"
-        variant="compact"
-        showBack={true}
         onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
       />
 
       <KeyboardAvoidingView
@@ -133,7 +135,7 @@ export default function CreateProjectScreen({ navigation }: any) {
             <Text style={styles.label}>Description</Text>
             <TextInput
               style={[styles.input, styles.textArea]}
-              placeholder="Tell collaborators about your project..."
+              placeholder="Tell others about your project..."
               placeholderTextColor={Colors.textSecondary}
               value={description}
               onChangeText={setDescription}
@@ -199,13 +201,13 @@ export default function CreateProjectScreen({ navigation }: any) {
             </View>
           </View>
 
-          {/* Looking for Collaborators Toggle */}
+          {/* Looking for Kollabs Toggle */}
           <View style={styles.toggleSection}>
             <View style={styles.toggleHeader}>
               <View style={styles.toggleInfo}>
-                <Text style={styles.toggleLabel}>Looking for Collaborators</Text>
+                <Text style={styles.toggleLabel}>Looking for Kollabs</Text>
                 <Text style={styles.toggleDescription}>
-                  Let others know you're open to collaboration
+                  Let others know you're open to kollab
                 </Text>
               </View>
               <Switch
@@ -221,7 +223,7 @@ export default function CreateProjectScreen({ navigation }: any) {
           <View style={styles.infoCard}>
             <Ionicons name="information-circle" size={24} color={Colors.info} />
             <Text style={styles.infoText}>
-              You can upload audio files, invite collaborators, and adjust all settings after creating your project.
+              You can upload audio files, invite kollabs, and adjust all settings after creating your project.
             </Text>
           </View>
 

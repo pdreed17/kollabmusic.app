@@ -1,21 +1,21 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
+  Image,
   ScrollView,
   ActivityIndicator,
 } from 'react-native'
 import { Ionicons } from '@expo/vector-icons'
+import { useFocusEffect } from '@react-navigation/native'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
 import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
 import { scale } from '../utils/responsive'
 import ProjectIcon from '../components/ProjectIcon'
-import Header from '../components/Header'
 import { getAllBlockedUserIds } from '../utils/blockingHelpers'
 import { hasSkillMatch } from '../utils/skillMatching'
 
@@ -25,18 +25,48 @@ interface SearchResult {
 }
 
 export default function SearchScreen({ navigation }: any) {
-  const { user, userProfile } = useAuth()
+  const { user, userProfile, refreshUserProfile } = useAuth()
   const [searchQuery, setSearchQuery] = useState('')
   const [activeFilter, setActiveFilter] = useState<'all' | 'projects' | 'people' | 'genres'>('all')
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
   const [blockedUserIds, setBlockedUserIds] = useState<string[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<{ [userId: string]: boolean }>({})
+  const [connectingUsers, setConnectingUsers] = useState<{ [userId: string]: boolean }>({})
 
   // Load blocked users on mount
   useEffect(() => {
     loadBlockedUsers()
   }, [user?.id])
+
+  // Reload blocked users and connection status when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadBlockedUsers()
+      if (results.length > 0) {
+        loadConnectionStatus(results)
+      }
+    }, [results, user?.id])
+  )
+
+  // Live search with debouncing - search as user types
+  useEffect(() => {
+    // Clear results if search query is empty
+    if (!searchQuery.trim()) {
+      setResults([])
+      setHasSearched(false)
+      return
+    }
+
+    // Debounce search by 400ms to avoid too many requests
+    const timeoutId = setTimeout(() => {
+      performSearch()
+    }, 400)
+
+    // Cleanup timeout on query change
+    return () => clearTimeout(timeoutId)
+  }, [searchQuery, activeFilter])
 
   const loadBlockedUsers = async () => {
     if (!user?.id) return
@@ -56,12 +86,18 @@ export default function SearchScreen({ navigation }: any) {
       // Handle different filter types
       if (activeFilter === 'all') {
         // Search projects (exclude projects from blocked users)
-        const { data: projects } = await supabase
+        let projectQuery = supabase
           .from('projects')
           .select('*, users!projects_creator_id_fkey(username, display_name)')
           .eq('is_public', true)
           .or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%,genre.ilike.%${searchQuery}%`)
-          .not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+
+        // Only add blocked filter if there are blocked users
+        if (blockedUserIds.length > 0) {
+          projectQuery = projectQuery.not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+        }
+
+        const { data: projects } = await projectQuery
           .order('updated_at', { ascending: false })
           .limit(10)
 
@@ -71,13 +107,22 @@ export default function SearchScreen({ navigation }: any) {
           })
         }
 
-        // Search people (exclude blocked users)
-        const { data: users } = await supabase
+        // Search people (exclude blocked users and self)
+        let userQuery = supabase
           .from('users')
-          .select('id, username, display_name, bio, specialties, open_to_kollab')
-          .or(`username.ilike.%${searchQuery}%,display_name.ilike.%${searchQuery}%,bio.ilike.%${searchQuery}%`)
-          .not('id', 'in', `(${blockedUserIds.join(',')})`)
-          .limit(10)
+          .select('id, username, display_name, first_name, last_name, bio, specialties, open_to_kollab, avatar_url')
+          .or(`username.ilike.%${searchQuery}%,display_name.ilike.%${searchQuery}%,first_name.ilike.%${searchQuery}%,last_name.ilike.%${searchQuery}%,bio.ilike.%${searchQuery}%`)
+
+        // Exclude current user (can't search for self)
+        if (user?.id) {
+          userQuery = userQuery.neq('id', user.id)
+        }
+
+        if (blockedUserIds.length > 0) {
+          userQuery = userQuery.not('id', 'in', `(${blockedUserIds.join(',')})`)
+        }
+
+        const { data: users } = await userQuery.limit(10)
 
         if (users) {
           users.forEach(user => {
@@ -85,12 +130,17 @@ export default function SearchScreen({ navigation }: any) {
           })
         }
       } else if (activeFilter === 'projects') {
-        const { data: projects } = await supabase
+        let projectQuery = supabase
           .from('projects')
           .select('*, users!projects_creator_id_fkey(username, display_name)')
           .eq('is_public', true)
           .or(`title.ilike.%${searchQuery}%,description.ilike.%${searchQuery}%,genre.ilike.%${searchQuery}%`)
-          .not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+
+        if (blockedUserIds.length > 0) {
+          projectQuery = projectQuery.not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+        }
+
+        const { data: projects } = await projectQuery
           .order('updated_at', { ascending: false })
           .limit(10)
 
@@ -100,12 +150,21 @@ export default function SearchScreen({ navigation }: any) {
           })
         }
       } else if (activeFilter === 'people') {
-        const { data: users } = await supabase
+        let userQuery = supabase
           .from('users')
-          .select('id, username, display_name, bio, specialties, open_to_kollab')
-          .or(`username.ilike.%${searchQuery}%,display_name.ilike.%${searchQuery}%,bio.ilike.%${searchQuery}%`)
-          .not('id', 'in', `(${blockedUserIds.join(',')})`)
-          .limit(10)
+          .select('id, username, display_name, first_name, last_name, bio, specialties, open_to_kollab, avatar_url')
+          .or(`username.ilike.%${searchQuery}%,display_name.ilike.%${searchQuery}%,first_name.ilike.%${searchQuery}%,last_name.ilike.%${searchQuery}%,bio.ilike.%${searchQuery}%`)
+
+        // Exclude current user (can't search for self)
+        if (user?.id) {
+          userQuery = userQuery.neq('id', user.id)
+        }
+
+        if (blockedUserIds.length > 0) {
+          userQuery = userQuery.not('id', 'in', `(${blockedUserIds.join(',')})`)
+        }
+
+        const { data: users } = await userQuery.limit(10)
 
         if (users) {
           users.forEach(user => {
@@ -113,12 +172,17 @@ export default function SearchScreen({ navigation }: any) {
           })
         }
       } else if (activeFilter === 'genres') {
-        const { data: projects } = await supabase
+        let genreQuery = supabase
           .from('projects')
           .select('*, users!projects_creator_id_fkey(username, display_name)')
           .eq('is_public', true)
           .ilike('genre', `%${searchQuery}%`)
-          .not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+
+        if (blockedUserIds.length > 0) {
+          genreQuery = genreQuery.not('creator_id', 'in', `(${blockedUserIds.join(',')})`)
+        }
+
+        const { data: projects } = await genreQuery
           .order('updated_at', { ascending: false })
           .limit(20)
 
@@ -130,10 +194,120 @@ export default function SearchScreen({ navigation }: any) {
       }
 
       setResults(searchResults)
+
+      // Load connection status for user results
+      await loadConnectionStatus(searchResults)
     } catch (error) {
-      console.error('Search error:', error)
+      if (__DEV__) console.error('Search error:', error)
     } finally {
       setSearching(false)
+    }
+  }
+
+  const loadConnectionStatus = async (searchResults: SearchResult[]) => {
+    if (!user?.id) return
+
+    const userResults = searchResults.filter(r => r.type === 'person')
+    if (userResults.length === 0) return
+
+    const userIds = userResults.map(r => r.data.id)
+
+    if (__DEV__) console.log('Loading connection status for user IDs:', userIds)
+
+    try {
+      const { data, error } = await supabase
+        .from('user_connections')
+        .select('following_id')
+        .eq('user_id', user.id)
+        .in('following_id', userIds)
+
+      if (__DEV__) console.log('Connection status query result:', { data, error })
+
+      if (!error && data) {
+        const statusMap: { [userId: string]: boolean } = {}
+        data.forEach(connection => {
+          statusMap[connection.following_id] = true
+        })
+        if (__DEV__) console.log('Setting connection status map:', statusMap)
+        setConnectionStatus(statusMap)
+      }
+    } catch (error) {
+      if (__DEV__) console.error('Error loading connection status:', error)
+    }
+  }
+
+  const handleConnect = async (userId: string) => {
+    if (!user?.id || connectingUsers[userId]) return
+
+    setConnectingUsers(prev => ({ ...prev, [userId]: true }))
+
+    try {
+      const isConnected = connectionStatus[userId]
+
+      // Debug logging
+      if (__DEV__) console.log('Connect attempt:', {
+        currentUserId: user.id,
+        targetUserId: userId,
+        isConnected
+      })
+
+      if (isConnected) {
+        // Disconnect
+        const { error } = await supabase
+          .from('user_connections')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('following_id', userId)
+
+        if (error) {
+          if (__DEV__) console.error('Disconnect error details:', error)
+          throw error
+        }
+        setConnectionStatus(prev => ({ ...prev, [userId]: false }))
+      } else {
+        // Connect
+        const { data, error } = await supabase
+          .from('user_connections')
+          .insert({
+            user_id: user.id,
+            following_id: userId,
+          })
+          .select()
+
+        if (error) {
+          if (__DEV__) console.error('Connect error details:', error)
+          throw error
+        }
+
+        if (__DEV__) console.log('Connection insert successful:', data)
+        setConnectionStatus(prev => ({ ...prev, [userId]: true }))
+      }
+
+      // Refresh current user's profile to update following_count
+      await refreshUserProfile()
+
+      // Verify the connection was saved by re-querying
+      const { data: verifyData, error: verifyError } = await supabase
+        .from('user_connections')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('following_id', userId)
+        .maybeSingle()
+
+      if (__DEV__) console.log('Connection verification:', {
+        userId,
+        exists: !!verifyData,
+        verifyError
+      })
+
+      // Update the status based on verification
+      if (!verifyError) {
+        setConnectionStatus(prev => ({ ...prev, [userId]: !!verifyData }))
+      }
+    } catch (error) {
+      if (__DEV__) console.error('Error connecting/disconnecting:', error)
+    } finally {
+      setConnectingUsers(prev => ({ ...prev, [userId]: false }))
     }
   }
 
@@ -148,17 +322,7 @@ export default function SearchScreen({ navigation }: any) {
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <Header
-        title="Search"
-        variant="compact"
-        showBack={true}
-        onBack={() => navigation.goBack()}
-        showProfile={true}
-        onProfilePress={() => navigation.navigate('Profile')}
-        profilePhotoUrl={userProfile?.avatar_url}
-      />
-
+    <>
       {/* Search Bar */}
       <View style={styles.searchSection}>
         <View style={styles.searchBar}>
@@ -166,9 +330,13 @@ export default function SearchScreen({ navigation }: any) {
           <TextInput
             style={styles.searchInput}
             placeholder={
-              activeFilter === 'genres' 
-                ? 'Search genres (Hip Hop, Rock, Jazz...)' 
-                : 'Search projects, people, genres...'
+              activeFilter === 'genres'
+                ? 'Search genres (Hip Hop, Rock, Jazz...)'
+                : activeFilter === 'people'
+                ? 'Search by first/last name, artist name, or specialty...'
+                : activeFilter === 'projects'
+                ? 'Search project titles, descriptions, or genres...'
+                : 'Search projects, people by any name...'
             }
             placeholderTextColor={Colors.textSecondary}
             value={searchQuery}
@@ -191,10 +359,7 @@ export default function SearchScreen({ navigation }: any) {
         >
           <TouchableOpacity
             style={[styles.filterButton, activeFilter === 'all' && styles.filterButtonActive]}
-            onPress={() => {
-              setActiveFilter('all')
-              if (hasSearched) performSearch()
-            }}
+            onPress={() => setActiveFilter('all')}
           >
             <Text style={[styles.filterText, activeFilter === 'all' && styles.filterTextActive]}>
               All
@@ -202,10 +367,7 @@ export default function SearchScreen({ navigation }: any) {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterButton, activeFilter === 'projects' && styles.filterButtonActive]}
-            onPress={() => {
-              setActiveFilter('projects')
-              if (hasSearched) performSearch()
-            }}
+            onPress={() => setActiveFilter('projects')}
           >
             <Text style={[styles.filterText, activeFilter === 'projects' && styles.filterTextActive]}>
               Projects
@@ -213,10 +375,7 @@ export default function SearchScreen({ navigation }: any) {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterButton, activeFilter === 'genres' && styles.filterButtonActive]}
-            onPress={() => {
-              setActiveFilter('genres')
-              if (hasSearched) performSearch()
-            }}
+            onPress={() => setActiveFilter('genres')}
           >
             <Text style={[styles.filterText, activeFilter === 'genres' && styles.filterTextActive]}>
               Genres
@@ -224,10 +383,7 @@ export default function SearchScreen({ navigation }: any) {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterButton, activeFilter === 'people' && styles.filterButtonActive]}
-            onPress={() => {
-              setActiveFilter('people')
-              if (hasSearched) performSearch()
-            }}
+            onPress={() => setActiveFilter('people')}
           >
             <Text style={[styles.filterText, activeFilter === 'people' && styles.filterTextActive]}>
               People
@@ -325,14 +481,22 @@ export default function SearchScreen({ navigation }: any) {
                 })() : (
                   <TouchableOpacity
                     style={styles.resultCard}
-                    onPress={() => {
-                      console.log('Navigate to user profile:', result.data.id)
-                    }}
+                    onPress={() => navigation.navigate('UserProfile', {
+                      userId: result.data.id
+                    })}
                   >
                     <View style={styles.userAvatar}>
-                      <Text style={styles.userAvatarText}>
-                        {(result.data.display_name || result.data.username).charAt(0).toUpperCase()}
-                      </Text>
+                      {result.data.avatar_url ? (
+                        <Image
+                          source={{ uri: result.data.avatar_url }}
+                          style={styles.userAvatarImage}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Text style={styles.userAvatarText}>
+                          {(result.data.display_name || result.data.username).charAt(0).toUpperCase()}
+                        </Text>
+                      )}
                     </View>
                     <View style={styles.resultContent}>
                       <View style={styles.userHeader}>
@@ -366,7 +530,30 @@ export default function SearchScreen({ navigation }: any) {
                         </View>
                       )}
                     </View>
-                    <Ionicons name="chevron-forward" size={20} color={Colors.textSecondary} />
+                    <TouchableOpacity
+                      style={[
+                        styles.connectButton,
+                        connectionStatus[result.data.id] && styles.connectedButton
+                      ]}
+                      onPress={(e) => {
+                        e.stopPropagation()
+                        handleConnect(result.data.id)
+                      }}
+                      disabled={connectingUsers[result.data.id]}
+                    >
+                      {connectingUsers[result.data.id] ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={connectionStatus[result.data.id] ? Colors.primary : Colors.text}
+                        />
+                      ) : (
+                        <Ionicons
+                          name={connectionStatus[result.data.id] ? "checkmark-circle" : "person-add"}
+                          size={20}
+                          color={connectionStatus[result.data.id] ? Colors.primary : Colors.text}
+                        />
+                      )}
+                    </TouchableOpacity>
                   </TouchableOpacity>
                 )}
               </View>
@@ -374,7 +561,7 @@ export default function SearchScreen({ navigation }: any) {
           </View>
         )}
       </ScrollView>
-    </SafeAreaView>
+    </>
   )
 }
 
@@ -550,6 +737,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  userAvatarImage: {
+    width: scale(48),
+    height: scale(48),
+    borderRadius: scale(24),
   },
   userAvatarText: {
     ...Typography.h3,
@@ -584,5 +777,19 @@ const styles = StyleSheet.create({
   moreText: {
     ...Typography.tiny,
     color: Colors.textSecondary,
+  },
+  connectButton: {
+    padding: Spacing.sm,
+    borderRadius: BorderRadius.full,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    minWidth: 40,
+    minHeight: 40,
+  },
+  connectedButton: {
+    backgroundColor: Colors.surface,
+    borderWidth: 2,
+    borderColor: Colors.primary,
   },
 })

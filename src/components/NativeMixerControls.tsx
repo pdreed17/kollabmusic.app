@@ -84,7 +84,9 @@ function MixerTrack({
   const isEffectivelyMuted = track.muted || (soloedTracks.length > 0 && !isSoloed)
 
   const handleVolumeChange = useCallback((volume: number) => {
-    onVolumeChange(track.id, volume)
+    // Clamp volume between 0 and 1
+    const clampedVolume = Math.max(0, Math.min(1, volume))
+    onVolumeChange(track.id, clampedVolume)
   }, [track.id, onVolumeChange])
 
   const handleMute = useCallback(() => {
@@ -96,7 +98,9 @@ function MixerTrack({
   }, [track.id, track.solo, onSolo])
 
   const handlePanChange = useCallback((newPan: number) => {
-    setPan(newPan)
+    // Clamp pan between -1 and 1
+    const clampedPan = Math.max(-1, Math.min(1, newPan))
+    setPan(clampedPan)
     // In a real implementation, this would update the audio engine's pan
     onTrackUpdate(track.id, { /* pan would be added to AudioTrack interface */ })
   }, [track.id, onTrackUpdate])

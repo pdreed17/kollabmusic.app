@@ -20,7 +20,7 @@ import {
   Platform,
 } from 'react-native'
 import { Audio, Video } from 'expo-av'
-import * as FileSystem from 'expo-file-system'
+import * as FileSystem from 'expo-file-system/legacy'
 import * as DocumentPicker from 'expo-document-picker'
 import * as Sharing from 'expo-sharing'
 import * as MediaLibrary from 'expo-media-library'
