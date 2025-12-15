@@ -14,7 +14,7 @@ import { Ionicons } from '@expo/vector-icons'
 import { useFocusEffect } from '@react-navigation/native'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
-import { Colors, Typography, Spacing, BorderRadius } from '../constants/theme'
+import { Colors, Typography, Spacing, BorderRadius, Shadows } from '../constants/theme'
 import ProjectIcon from '../components/ProjectIcon'
 import { SkeletonList, ProjectCardSkeleton } from '../components/LoadingSkeleton'
 import { hasSkillMatch } from '../utils/skillMatching'
@@ -781,6 +781,7 @@ const styles = StyleSheet.create({
     marginTop: Spacing.lg,
     padding: Spacing.md,
     borderRadius: BorderRadius.md,
+    ...Shadows.glow(Colors.primary),
   },
   alertIcon: {
     width: scale(36),
@@ -845,6 +846,10 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     borderWidth: 1,
     borderColor: Colors.border,
+    // Subtle top highlight for depth
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.05)',
+    ...Shadows.md,
   },
   continueCardTitle: {
     ...Typography.bodyLarge,
@@ -873,10 +878,12 @@ const styles = StyleSheet.create({
     padding: Spacing.md,
     alignItems: 'center',
     gap: Spacing.xs,
+    ...Shadows.sm,
   },
   primaryAction: {
     backgroundColor: Colors.primary,
     borderColor: Colors.primary,
+    ...Shadows.glow(Colors.primary),
   },
   quickActionText: {
     ...Typography.caption,
@@ -983,6 +990,7 @@ const styles = StyleSheet.create({
     borderRadius: BorderRadius.md,
     borderWidth: 1,
     borderColor: Colors.border,
+    ...Shadows.sm,
   },
   activityCardMatched: {
     borderWidth: 2,
