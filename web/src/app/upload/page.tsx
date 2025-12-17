@@ -119,7 +119,9 @@ export default function UploadPage() {
       .eq('user_id', userId)
       .eq('status', 'accepted')
 
-    const collabProjectsList = collabProjects?.map(c => c.projects).filter(Boolean) as Project[] || []
+    const collabProjectsList: Project[] = (collabProjects || [])
+      .map(c => c.projects as unknown as Project)
+      .filter((p): p is Project => p !== null && p !== undefined)
 
     // Combine and mark ownership
     const ownProjectsWithMeta: ProjectWithMeta[] = (ownProjects || []).map(p => ({
